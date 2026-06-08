@@ -1,0 +1,12 @@
+{
+  "name": "tw-stock-ai-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "api:test": "cd apps/api && pytest",
+    "web:test": "cd apps/web && npm test",
+    "web:dev": "cd apps/web && npm run dev",
+    "compose:up": "docker compose up --build"
+  }
+}
+

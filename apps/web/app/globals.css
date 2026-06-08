@@ -1,0 +1,98 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-ink: 23 23 23;
+  --color-muted: 94 94 94;
+  --color-line: 214 214 214;
+  --color-paper: 247 247 247;
+  --color-panel: 255 255 255;
+  --color-control: 244 244 245;
+  --color-gain: 22 163 74;
+  --color-warn: 202 138 4;
+  --color-loss: 220 38 38;
+  color: rgb(var(--color-ink));
+  background: rgb(var(--color-paper));
+}
+
+:root[data-theme="dark"] {
+  --color-ink: 245 245 245;
+  --color-muted: 168 168 168;
+  --color-line: 55 55 55;
+  --color-paper: 10 10 10;
+  --color-panel: 23 23 23;
+  --color-control: 38 38 38;
+  --color-gain: 74 222 128;
+  --color-warn: 250 204 21;
+  --color-loss: 248 113 113;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: rgb(var(--color-paper));
+  color: rgb(var(--color-ink));
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+.focus-ring:focus-visible {
+  outline: 3px solid rgba(31, 157, 97, 0.3);
+  outline-offset: 2px;
+}
+
+.chart-shell .modebar-container {
+  right: 10px !important;
+  top: 10px !important;
+}
+
+.chart-shell .modebar {
+  border: 1px solid rgb(var(--color-line)) !important;
+  border-radius: 8px !important;
+  background: rgb(var(--color-panel)) !important;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.14) !important;
+  display: inline-flex !important;
+  gap: 4px !important;
+  opacity: 1 !important;
+  padding: 5px !important;
+  width: auto !important;
+}
+
+.chart-shell .modebar-group {
+  display: inline-flex !important;
+  gap: 4px !important;
+  width: auto !important;
+  height: auto !important;
+}
+
+.chart-shell .modebar-btn {
+  border-radius: 6px !important;
+  background: rgb(var(--color-control)) !important;
+  color: rgb(var(--color-ink)) !important;
+  opacity: 1 !important;
+  margin: 2px !important;
+  width: 30px !important;
+  height: 30px !important;
+}
+
+.chart-shell .modebar-btn:hover {
+  background: rgb(var(--color-line)) !important;
+}
+
+.chart-shell .modebar-btn svg {
+  fill: rgb(var(--color-ink)) !important;
+  opacity: 1 !important;
+}
+
+.chart-shell .modebar-btn svg path {
+  fill: rgb(var(--color-ink)) !important;
+  opacity: 1 !important;
+}
