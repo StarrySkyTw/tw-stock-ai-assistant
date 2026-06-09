@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from pathlib import Path
 
 from reportlab.lib.pagesizes import A4
@@ -10,6 +9,7 @@ from reportlab.pdfgen import canvas
 
 from app.core.config import get_settings
 from app.services.analysis import AnalysisService
+from app.services.calendar import taipei_now
 
 
 class ReportService:
@@ -21,7 +21,7 @@ class ReportService:
         analysis = await self.analysis.analyze(symbol)
         output_dir = self.settings.reports_dir
         output_dir.mkdir(parents=True, exist_ok=True)
-        now = datetime.now(UTC)
+        now = taipei_now()
         path = output_dir / f"{symbol.upper()}-{now.strftime('%Y%m%d%H%M%S')}.pdf"
         _write_pdf(path, analysis)
         return {"symbol": symbol.upper(), "file_path": str(path), "generated_at": now}

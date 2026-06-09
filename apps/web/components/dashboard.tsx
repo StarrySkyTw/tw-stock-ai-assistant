@@ -1,650 +1,1068 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import { fetchAnalysis, fetchChart, generatePdf } from "@/lib/api";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import {
+  closePosition,
+  createWatchlistItem,
+  deleteWatchlistItem,
+  fetchAiPicks,
+  fetchAnalysis,
+  fetchChart,
+  fetchPositions,
+  fetchWatchlist,
+  generatePdf,
+  savePosition
+} from "@/lib/api";
 import { formatNumber, scoreClass } from "@/lib/format";
-import type { AnalysisResponse, ChartResponse } from "@/lib/types";
+import type {
+  AiStockPick,
+  AiStockPicksResponse,
+  AnalysisResponse,
+  ChartResponse,
+  Light,
+  MarketRefreshInfo,
+  PositionItem,
+  WatchlistItem
+} from "@/lib/types";
 import { ChartPanel } from "./chart-panel";
-import { MetricGrid } from "./metric-grid";
 import { RiskLightBadges } from "./risk-lights";
 
 type Theme = "light" | "dark";
-type TabKey = "decision" | "overview" | "position" | "watchlist" | "chart" | "signals" | "ai";
+type Tone = "gain" | "warn" | "loss" | "neutral";
+type DashboardView = "overview" | "chart" | "watchlist" | "positions" | "settings";
 
-type PositionSnapshot = {
-  entryPrice: number | null;
-  highestPrice: number | null;
-};
-
-const tabs: Array<{ key: TabKey; label: string }> = [
-  { key: "decision", label: "決策" },
-  { key: "overview", label: "總覽" },
-  { key: "position", label: "持倉" },
-  { key: "watchlist", label: "自選比較" },
-  { key: "chart", label: "圖表" },
-  { key: "signals", label: "訊號" },
-  { key: "ai", label: "AI" }
+const DEFAULT_SYMBOL = "2330";
+const DEFAULT_WATCHLIST = "2330, 2454, 2317, 0050";
+const WATCHLIST_STORAGE_KEY = "stockai-watchlist-symbols";
+const VIEW_STORAGE_KEY = "stockai-dashboard-view";
+const FALLBACK_REFRESH_SECONDS = 900;
+const DASHBOARD_VIEWS: Array<{ id: DashboardView; label: string; description: string }> = [
+  { id: "overview", label: "看盤總覽", description: "AI 選股與目前個股判斷" },
+  { id: "chart", label: "價格圖表", description: "K 線、均線與技術指標" },
+  { id: "watchlist", label: "自選清單", description: "管理掃描清單與候選股" },
+  { id: "positions", label: "持倉管理", description: "買進價、股數與停損停利" },
+  { id: "settings", label: "設定匯出", description: "主題、更新狀態與 PDF" }
 ];
 
-const WATCHLIST_STORAGE_KEY = "stockai-watchlist-symbols";
-
 export function Dashboard() {
-  const [symbol, setSymbol] = useState("2330");
+  const [symbol, setSymbol] = useState(DEFAULT_SYMBOL);
   const [range, setRange] = useState("1y");
   const [entryPrice, setEntryPrice] = useState("");
   const [highestPrice, setHighestPrice] = useState("");
-  const [watchlistInput, setWatchlistInput] = useState("2330, 2454, 2317, 0050");
-  const [watchlistResults, setWatchlistResults] = useState<AnalysisResponse[]>([]);
-  const [watchlistLoading, setWatchlistLoading] = useState(false);
-  const [watchlistError, setWatchlistError] = useState<string | null>(null);
-  const [loadedPosition, setLoadedPosition] = useState<PositionSnapshot>({ entryPrice: null, highestPrice: null });
-  const [activeTab, setActiveTab] = useState<TabKey>("decision");
-  const [theme, setTheme] = useState<Theme>("light");
-  const [themeReady, setThemeReady] = useState(false);
+  const [quantity, setQuantity] = useState("");
+  const [watchlistInput, setWatchlistInput] = useState(DEFAULT_WATCHLIST);
+  const [watchlistItems, setWatchlistItems] = useState<WatchlistItem[]>([]);
+  const [positions, setPositions] = useState<PositionItem[]>([]);
   const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null);
   const [chart, setChart] = useState<ChartResponse | null>(null);
+  const [aiPicks, setAiPicks] = useState<AiStockPicksResponse | null>(null);
+  const [theme, setTheme] = useState<Theme>("light");
+  const [activeView, setActiveView] = useState<DashboardView>("overview");
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [bootReady, setBootReady] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [savingWatchlist, setSavingWatchlist] = useState(false);
+  const [savingPosition, setSavingPosition] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [chartError, setChartError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
   const [pdfPath, setPdfPath] = useState<string | null>(null);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
+  const refreshInFlight = useRef(false);
+  const didInitialLoad = useRef(false);
+
+  const refreshInfo = aiPicks?.refresh ?? analysis?.refresh ?? null;
+  const watchlistSymbols = useMemo(() => parseSymbols(watchlistInput), [watchlistInput]);
+  const currentPosition = positions.find((item) => item.symbol === symbol.toUpperCase());
 
   useEffect(() => {
-    const saved = localStorage.getItem("stockai-theme");
+    const savedTheme = localStorage.getItem("stockai-theme");
     const savedWatchlist = localStorage.getItem(WATCHLIST_STORAGE_KEY);
+    const savedView = localStorage.getItem(VIEW_STORAGE_KEY);
     const preferred = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-    const nextTheme = saved === "dark" || saved === "light" ? saved : preferred;
+    const nextTheme = savedTheme === "dark" || savedTheme === "light" ? savedTheme : preferred;
     setTheme(nextTheme);
-    if (savedWatchlist) setWatchlistInput(savedWatchlist);
     document.documentElement.dataset.theme = nextTheme;
-    setThemeReady(true);
+    if (savedWatchlist) {
+      setWatchlistInput(savedWatchlist);
+    }
+    if (isDashboardView(savedView)) {
+      setActiveView(savedView);
+    }
+    setBootReady(true);
   }, []);
 
   useEffect(() => {
-    if (!themeReady) return;
+    if (!bootReady) return;
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("stockai-theme", theme);
-  }, [theme, themeReady]);
+  }, [bootReady, theme]);
 
   useEffect(() => {
-    if (!themeReady) return;
+    if (!bootReady) return;
     localStorage.setItem(WATCHLIST_STORAGE_KEY, watchlistInput);
-  }, [watchlistInput, themeReady]);
-
-  async function load(nextSymbol = symbol, nextRange = range) {
-    const parsedEntry = parsePositiveNumber(entryPrice);
-    const parsedHighest = parsePositiveNumber(highestPrice);
-
-    if (entryPrice.trim() && parsedEntry === null) {
-      setError("買進價請輸入大於 0 的數字，例如 650。");
-      return;
-    }
-    if (highestPrice.trim() && parsedHighest === null) {
-      setError("持倉最高價請輸入大於 0 的數字，或留空。");
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-    setChartError(null);
-    setPdfPath(null);
-
-    try {
-      const analysisData = await fetchAnalysis(nextSymbol, {
-        entryPrice: parsedEntry ?? undefined,
-        highestPrice: parsedHighest ?? undefined,
-        atrMultiplier: 2
-      });
-      setAnalysis(analysisData);
-      setLoadedPosition({ entryPrice: parsedEntry, highestPrice: parsedHighest });
-      setActiveTab(parsedEntry ? "position" : "decision");
-    } catch (err) {
-      setAnalysis(null);
-      setChart(null);
-      setError(err instanceof Error ? err.message : "分析資料載入失敗");
-      setLoading(false);
-      return;
-    }
-
-    try {
-      const chartData = await fetchChart(nextSymbol, nextRange);
-      setChart(chartData);
-    } catch (err) {
-      setChart(null);
-      setChartError(err instanceof Error ? err.message : "圖表載入失敗");
-    } finally {
-      setLoading(false);
-    }
-  }
+  }, [bootReady, watchlistInput]);
 
   useEffect(() => {
-    void load("2330", "1y");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (!bootReady) return;
+    localStorage.setItem(VIEW_STORAGE_KEY, activeView);
+  }, [activeView, bootReady]);
+
+  useEffect(() => {
+    if (!bootReady) return;
+    async function loadSavedState() {
+      try {
+        const [savedWatchlist, openPositions] = await Promise.all([fetchWatchlist(), fetchPositions("open")]);
+        setWatchlistItems(savedWatchlist);
+        setPositions(openPositions);
+        if (savedWatchlist.length) {
+          setWatchlistInput(savedWatchlist.map((item) => item.symbol).join(", "));
+        }
+        const savedPosition = openPositions.find((item) => item.symbol === DEFAULT_SYMBOL);
+        if (savedPosition) {
+          setEntryPrice(String(savedPosition.entry_price));
+          setHighestPrice(savedPosition.highest_price ? String(savedPosition.highest_price) : "");
+          setQuantity(savedPosition.quantity ? String(savedPosition.quantity) : "");
+        }
+      } catch {
+        setMessage("自選股或持倉暫時讀取失敗，仍可直接查詢分析。");
+      }
+    }
+
+    void loadSavedState();
+  }, [bootReady]);
+
+  const refreshAll = useCallback(
+    async (options: { silent?: boolean; nextSymbol?: string } = {}) => {
+      const { silent = false } = options;
+      if (refreshInFlight.current) return;
+
+      const nextSymbol = normalizeSymbol(options.nextSymbol ?? symbol);
+      const parsedEntry = parsePositiveNumber(entryPrice);
+      const parsedHighest = parsePositiveNumber(highestPrice);
+
+      if (entryPrice.trim() && parsedEntry === null) {
+        setError("買進價請輸入大於 0 的數字。");
+        return;
+      }
+      if (highestPrice.trim() && parsedHighest === null) {
+        setError("最高價請輸入大於 0 的數字。");
+        return;
+      }
+
+      refreshInFlight.current = true;
+      setError(null);
+      setPdfPath(null);
+      if (silent) {
+        setRefreshing(true);
+      } else {
+        setLoading(true);
+      }
+
+      const symbols = parseSymbols(watchlistInput);
+      const [analysisResult, chartResult, picksResult] = await Promise.allSettled([
+        fetchAnalysis(nextSymbol, {
+          entryPrice: parsedEntry ?? undefined,
+          highestPrice: parsedHighest ?? undefined,
+          atrMultiplier: 2
+        }),
+        fetchChart(nextSymbol, range),
+        fetchAiPicks({ universe: symbols.length ? symbols : undefined, limit: 5, minScore: 55 })
+      ]);
+
+      const errors: string[] = [];
+      if (analysisResult.status === "fulfilled") {
+        setAnalysis(analysisResult.value);
+        setSymbol(analysisResult.value.symbol);
+      } else {
+        errors.push(readError(analysisResult.reason, "個股分析讀取失敗"));
+      }
+
+      if (chartResult.status === "fulfilled") {
+        setChart(chartResult.value);
+      } else {
+        errors.push(readError(chartResult.reason, "圖表讀取失敗"));
+      }
+
+      if (picksResult.status === "fulfilled") {
+        setAiPicks(picksResult.value);
+      } else {
+        errors.push(readError(picksResult.reason, "AI 選股讀取失敗"));
+      }
+
+      if (errors.length) {
+        setError(errors.join(" / "));
+      } else {
+        setMessage(silent ? "已依台北時間自動更新。" : "分析已更新。");
+      }
+      if (analysisResult.status === "fulfilled" || picksResult.status === "fulfilled") {
+        setLastUpdatedAt(new Date().toISOString());
+      }
+
+      refreshInFlight.current = false;
+      setLoading(false);
+      setRefreshing(false);
+    },
+    [entryPrice, highestPrice, range, symbol, watchlistInput]
+  );
+
+  useEffect(() => {
+    if (!bootReady || didInitialLoad.current) return;
+    didInitialLoad.current = true;
+    void refreshAll();
+  }, [bootReady, refreshAll]);
+
+  useEffect(() => {
+    if (!autoRefresh || !analysis) return;
+    const seconds = refreshInfo?.refresh_interval_seconds ?? FALLBACK_REFRESH_SECONDS;
+    const delay = Math.max(15, seconds) * 1000;
+    const timer = window.setTimeout(() => {
+      void refreshAll({ silent: true });
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [analysis, autoRefresh, refreshAll, refreshInfo?.refresh_interval_seconds]);
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    void load(symbol, range);
+    void refreshAll();
+  }
+
+  async function saveCurrentWatchlist() {
+    const symbols = parseSymbols(watchlistInput);
+    if (!symbols.length) {
+      setError("請至少輸入一檔自選股，例如 2330, 2454。");
+      return;
+    }
+
+    setSavingWatchlist(true);
+    setError(null);
+    try {
+      const existing = await fetchWatchlist();
+      const desired = new Set(symbols);
+      const kept = new Set<string>();
+      await Promise.all(
+        existing.map((item) => {
+          const normalized = normalizeSymbol(item.symbol);
+          if (!desired.has(normalized) || kept.has(normalized)) {
+            return deleteWatchlistItem(item.id);
+          }
+          kept.add(normalized);
+          return Promise.resolve({ status: "kept" });
+        })
+      );
+      await Promise.all(symbols.filter((item) => !kept.has(item)).map((item) => createWatchlistItem(item)));
+      const updated = await fetchWatchlist();
+      setWatchlistItems(updated);
+      setWatchlistInput(updated.map((item) => item.symbol).join(", ") || symbols.join(", "));
+      setMessage(`已儲存 ${symbols.length} 檔自選股。`);
+      void refreshAll({ silent: true });
+    } catch (err) {
+      setError(readError(err, "自選股儲存失敗"));
+    } finally {
+      setSavingWatchlist(false);
+    }
+  }
+
+  async function saveCurrentPosition() {
+    const parsedEntry = parsePositiveNumber(entryPrice);
+    const parsedHighest = parsePositiveNumber(highestPrice);
+    const parsedQuantity = parseNonNegativeNumber(quantity);
+
+    if (parsedEntry === null) {
+      setError("請先輸入買進價，才能儲存持倉。");
+      return;
+    }
+    if (highestPrice.trim() && parsedHighest === null) {
+      setError("最高價請輸入大於 0 的數字。");
+      return;
+    }
+    if (quantity.trim() && parsedQuantity === null) {
+      setError("股數請輸入 0 或大於 0 的數字。");
+      return;
+    }
+
+    setSavingPosition(true);
+    setError(null);
+    try {
+      const saved = await savePosition({
+        symbol,
+        entry_price: parsedEntry,
+        quantity: parsedQuantity ?? 0,
+        highest_price: parsedHighest
+      });
+      const updated = await fetchPositions("open");
+      setPositions(updated);
+      setSymbol(saved.symbol);
+      setMessage(`已儲存 ${saved.symbol} 持倉。`);
+      void refreshAll({ silent: true });
+    } catch (err) {
+      setError(readError(err, "持倉儲存失敗"));
+    } finally {
+      setSavingPosition(false);
+    }
+  }
+
+  async function closeCurrentPosition() {
+    if (!currentPosition) return;
+    setSavingPosition(true);
+    setError(null);
+    try {
+      await closePosition(currentPosition.id);
+      setPositions(await fetchPositions("open"));
+      setMessage(`已結束 ${currentPosition.symbol} 持倉。`);
+    } catch (err) {
+      setError(readError(err, "持倉結束失敗"));
+    } finally {
+      setSavingPosition(false);
+    }
   }
 
   async function createPdf() {
     if (!analysis) return;
-    setPdfPath(null);
     setError(null);
+    setPdfPath(null);
     try {
       const result = await generatePdf(analysis.symbol);
       setPdfPath(result.file_path);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "PDF 產生失敗");
+      setError(readError(err, "PDF 產生失敗"));
     }
   }
 
-  async function compareWatchlist() {
-    const symbols = parseWatchlistSymbols(watchlistInput);
-    if (!symbols.length) {
-      setWatchlistError("請先輸入至少一個股票代號，例如 2330, 2454, 2317。");
-      setActiveTab("watchlist");
-      return;
+  function selectSymbol(nextSymbol: string) {
+    const normalized = normalizeSymbol(nextSymbol);
+    setSymbol(normalized);
+    const savedPosition = positions.find((item) => item.symbol === normalized);
+    if (savedPosition) {
+      setEntryPrice(String(savedPosition.entry_price));
+      setHighestPrice(savedPosition.highest_price ? String(savedPosition.highest_price) : "");
+      setQuantity(savedPosition.quantity ? String(savedPosition.quantity) : "");
     }
-
-    setWatchlistLoading(true);
-    setWatchlistError(null);
-    setActiveTab("watchlist");
-    try {
-      const settled = await Promise.allSettled(symbols.map((item) => fetchAnalysis(item)));
-      const fulfilled = settled
-        .filter((result): result is PromiseFulfilledResult<AnalysisResponse> => result.status === "fulfilled")
-        .map((result) => result.value)
-        .sort((a, b) => b.adjusted_score - a.adjusted_score);
-      const failed = settled.length - fulfilled.length;
-      setWatchlistResults(fulfilled);
-      setWatchlistError(failed ? `${failed} 檔載入失敗，其餘標的已完成比較。` : null);
-    } catch (err) {
-      setWatchlistResults([]);
-      setWatchlistError(err instanceof Error ? err.message : "自選比較載入失敗");
-    } finally {
-      setWatchlistLoading(false);
-    }
-  }
-
-  function selectWatchlistSymbol(nextSymbol: string) {
-    setSymbol(nextSymbol);
-    void load(nextSymbol, range);
+    void refreshAll({ silent: true, nextSymbol: normalized });
   }
 
   return (
-    <main className="min-h-screen bg-paper px-4 py-5 text-ink md:px-8">
+    <main className="min-h-screen bg-paper px-4 py-4 text-ink md:px-8">
       <div className="mx-auto flex max-w-7xl flex-col gap-4">
-        <section className="rounded-md border border-line bg-panel p-4">
-          <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div>
-              <h1 className="text-xl font-semibold">台股 AI 投資決策助手</h1>
-              <p className="text-sm text-muted">輸入股票代號與買進價，查看評分、持倉停利停損、風險與圖表。</p>
-            </div>
-            <ThemeToggle theme={theme} onChange={setTheme} />
-          </div>
+        <AppHeader
+          activeView={activeView}
+          menuOpen={menuOpen}
+          theme={theme}
+          onMenuOpenChange={setMenuOpen}
+          onThemeChange={setTheme}
+          onViewChange={setActiveView}
+        />
 
-          <form className="grid gap-3 md:grid-cols-12 md:items-end" onSubmit={submit}>
-            <label className="flex flex-col gap-1 text-sm font-medium md:col-span-3">
-              股票代號
-              <input
-                className="focus-ring h-11 rounded-md border border-line bg-panel px-3 text-base text-ink"
-                value={symbol}
-                onChange={(event) => setSymbol(event.target.value.toUpperCase())}
-                placeholder="2330"
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-sm font-medium md:col-span-2">
-              區間
-              <select
-                className="focus-ring h-11 rounded-md border border-line bg-panel px-3 text-ink"
-                value={range}
-                onChange={(event) => setRange(event.target.value)}
-              >
-                <option value="1y">1年</option>
-                <option value="3y">3年</option>
-                <option value="5y">5年</option>
-              </select>
-            </label>
-            <label className="flex flex-col gap-1 text-sm font-medium md:col-span-2">
-              我的買進價
-              <input
-                className="focus-ring h-11 rounded-md border border-line bg-panel px-3 text-base text-ink"
-                inputMode="decimal"
-                value={entryPrice}
-                onChange={(event) => setEntryPrice(event.target.value)}
-                placeholder="例如 650"
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-sm font-medium md:col-span-2">
-              持倉最高價
-              <input
-                className="focus-ring h-11 rounded-md border border-line bg-panel px-3 text-base text-ink"
-                inputMode="decimal"
-                value={highestPrice}
-                onChange={(event) => setHighestPrice(event.target.value)}
-                placeholder="可留空"
-              />
-            </label>
-            <div className="flex gap-2 md:col-span-3">
-              <button
-                className="focus-ring h-11 flex-1 rounded-md bg-ink px-5 font-semibold text-panel disabled:opacity-60"
-                type="submit"
-                disabled={loading}
-              >
-                {loading ? "分析中" : "開始分析"}
-              </button>
-              <button
-                className="focus-ring h-11 rounded-md border border-line bg-control px-5 font-semibold text-ink disabled:opacity-50"
-                type="button"
-                onClick={createPdf}
-                disabled={!analysis}
-              >
-                產生PDF
-              </button>
-            </div>
-          </form>
-          <div className="mt-3 grid gap-2 border-t border-line pt-3 md:grid-cols-[1fr_auto] md:items-end">
-            <label className="flex flex-col gap-1 text-sm font-medium">
-              自選比較
-              <input
-                className="focus-ring h-11 rounded-md border border-line bg-panel px-3 text-base text-ink"
-                value={watchlistInput}
-                onChange={(event) => setWatchlistInput(event.target.value)}
-                placeholder="2330, 2454, 2317, 0050"
-              />
-            </label>
-            <button
-              className="focus-ring h-11 rounded-md border border-line bg-control px-5 font-semibold text-ink disabled:opacity-50"
-              type="button"
-              onClick={compareWatchlist}
-              disabled={watchlistLoading}
-            >
-              {watchlistLoading ? "比較中" : "比較自選"}
-            </button>
-          </div>
-          {error && <div className="mt-3 rounded-md bg-loss/10 p-3 text-sm text-loss">{error}</div>}
-          {pdfPath && <div className="mt-3 rounded-md bg-gain/10 p-3 text-sm text-gain">PDF 已產生：{pdfPath}</div>}
-        </section>
+        <CommandBar
+          analysis={analysis}
+          loading={loading}
+          range={range}
+          refreshing={refreshing}
+          symbol={symbol}
+          onRangeChange={setRange}
+          onSubmit={submit}
+          onSymbolChange={setSymbol}
+        />
 
-        {analysis && (
+        {error && <Notice tone="loss">{error}</Notice>}
+        {message && !error && <Notice tone="gain">{message}</Notice>}
+        {pdfPath && <Notice tone="gain">PDF 已產生：{pdfPath}</Notice>}
+
+        {activeView === "overview" && (
           <>
-            <nav className="flex gap-2 overflow-x-auto rounded-md border border-line bg-panel p-2">
-              {tabs.map((tab) => (
-                <button
-                  key={tab.key}
-                  className={`focus-ring rounded-md px-4 py-2 text-sm font-semibold transition ${
-                    activeTab === tab.key ? "bg-ink text-panel" : "bg-control text-ink hover:border-ink"
-                  }`}
-                  type="button"
-                  onClick={() => setActiveTab(tab.key)}
-                >
-                  {tab.label}
-                </button>
-              ))}
-            </nav>
-
-            {activeTab === "decision" && <DecisionTab analysis={analysis} />}
-            {activeTab === "overview" && <OverviewTab analysis={analysis} />}
-            {activeTab === "position" && <PositionTab analysis={analysis} position={loadedPosition} />}
-            {activeTab === "watchlist" && (
-              <WatchlistTab
-                input={watchlistInput}
-                loading={watchlistLoading}
-                error={watchlistError}
-                results={watchlistResults}
-                onInputChange={setWatchlistInput}
-                onCompare={compareWatchlist}
-                onSelect={selectWatchlistSymbol}
+            <MarketStatus
+              refreshInfo={refreshInfo}
+              loading={loading}
+              refreshing={refreshing}
+              autoRefresh={autoRefresh}
+              lastUpdatedAt={lastUpdatedAt}
+              onAutoRefreshChange={setAutoRefresh}
+              onRefresh={() => void refreshAll()}
+            />
+            <section className="grid min-w-0 gap-4 xl:grid-cols-[1.05fr_0.95fr]">
+              <AiPickerPanel
+                result={aiPicks}
+                loading={loading && !aiPicks}
+                watchlistCount={watchlistSymbols.length}
+                onSelect={selectSymbol}
               />
-            )}
-            {activeTab === "chart" && (
-              <>
-                {chartError && <div className="rounded-md bg-loss/10 p-3 text-sm text-loss">{chartError}</div>}
-                <ChartPanel chart={chart} theme={theme} />
-              </>
-            )}
-            {activeTab === "signals" && <SignalsTab analysis={analysis} />}
-            {activeTab === "ai" && <AiTab analysis={analysis} />}
+              <AnalysisPanel analysis={analysis} loading={loading && !analysis} />
+            </section>
           </>
         )}
 
-        {!analysis && (
+        {activeView === "chart" && <ChartPanel chart={chart} theme={theme} />}
+
+        {activeView === "watchlist" && (
           <>
-            {chartError && <div className="rounded-md bg-loss/10 p-3 text-sm text-loss">{chartError}</div>}
-            <ChartPanel chart={chart} theme={theme} />
+            <WatchlistEditor
+              saving={savingWatchlist}
+              value={watchlistInput}
+              onChange={setWatchlistInput}
+              onSave={saveCurrentWatchlist}
+            />
+            <section className="grid min-w-0 gap-4 lg:grid-cols-[0.8fr_1.2fr]">
+              <WatchlistPanel items={watchlistItems} symbols={watchlistSymbols} onSelect={selectSymbol} />
+              <AiPickerPanel
+                result={aiPicks}
+                loading={loading && !aiPicks}
+                watchlistCount={watchlistSymbols.length}
+                onSelect={selectSymbol}
+              />
+            </section>
           </>
+        )}
+
+        {activeView === "positions" && (
+          <>
+            <PositionEditor
+              currentPosition={currentPosition}
+              entryPrice={entryPrice}
+              highestPrice={highestPrice}
+              quantity={quantity}
+              saving={savingPosition}
+              onClose={closeCurrentPosition}
+              onEntryPriceChange={setEntryPrice}
+              onHighestPriceChange={setHighestPrice}
+              onQuantityChange={setQuantity}
+              onSave={saveCurrentPosition}
+            />
+            <section className="grid min-w-0 gap-4 lg:grid-cols-[0.95fr_1.05fr]">
+              <PositionPanel positions={positions} onSelect={selectSymbol} />
+              <AnalysisPanel analysis={analysis} loading={loading && !analysis} />
+            </section>
+          </>
+        )}
+
+        {activeView === "settings" && (
+          <SettingsPanel
+            analysis={analysis}
+            autoRefresh={autoRefresh}
+            lastUpdatedAt={lastUpdatedAt}
+            loading={loading}
+            refreshInfo={refreshInfo}
+            refreshing={refreshing}
+            theme={theme}
+            onAutoRefreshChange={setAutoRefresh}
+            onCreatePdf={createPdf}
+            onRefresh={() => void refreshAll()}
+            onThemeChange={setTheme}
+          />
         )}
       </div>
     </main>
   );
 }
 
-function OverviewTab({ analysis }: { analysis: AnalysisResponse }) {
-  return (
-    <div className="flex flex-col gap-3">
-      <section className="grid gap-3 md:grid-cols-[280px_1fr]">
-        <div className="rounded-md border border-line bg-panel p-4">
-          <div className="text-sm text-muted">{analysis.analysis_date}</div>
-          <div className="mt-1 text-xl font-semibold">
-            {analysis.symbol}{analysis.name ? ` ${analysis.name}` : ""}
-          </div>
-          <div className={`mt-2 text-5xl font-bold ${scoreClass(analysis.adjusted_score)}`}>
-            {formatNumber(analysis.adjusted_score, 0)}
-          </div>
-          <div className="mt-2 text-2xl font-semibold">{analysis.recommendation}</div>
-          <div className="mt-3 text-sm text-muted">原始分數 {formatNumber(analysis.raw_score, 0)} / 100</div>
-        </div>
-        <div className="rounded-md border border-line bg-panel p-4">
-          <RiskLightBadges lights={analysis.risk_lights} />
-          <p className="mt-4 text-sm leading-6 text-muted">{analysis.disclaimer}</p>
-        </div>
-      </section>
-      <MetricGrid analysis={analysis} />
-      <section className="grid gap-3 md:grid-cols-2">
-        <InfoList title="主要理由" items={analysis.reasons} tone="gain" limit={5} />
-        <InfoList title="風險提醒" items={analysis.risks} tone="loss" limit={5} />
-      </section>
-    </div>
-  );
-}
-
-function DecisionTab({ analysis }: { analysis: AnalysisResponse }) {
-  const plan = analysis.decision_plan;
-  const topReason = analysis.reasons[0] ?? "目前需要更多資料確認。";
-  const topRisk = analysis.risks[0] ?? "目前未偵測到重大單一風險。";
-
-  return (
-    <div className="flex flex-col gap-3">
-      <section className="grid gap-3 lg:grid-cols-[1.1fr_0.9fr]">
-        <div className={`rounded-md border p-4 ${biasClass(plan.bias)}`}>
-          <div className="text-sm font-medium">決策結論</div>
-          <div className="mt-1 text-2xl font-bold">{plan.headline}</div>
-          <p className="mt-3 text-sm leading-6">{plan.action}</p>
-          <div className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-4">
-            <DecisionStat label="偏向" value={biasLabel(plan.bias)} />
-            <DecisionStat label="信心" value={plan.confidence} />
-            <DecisionStat label="總分" value={formatNumber(analysis.adjusted_score, 0)} />
-            <DecisionStat label="建議上限" value={plan.research_position_size} />
-          </div>
-        </div>
-        <div className="rounded-md border border-line bg-panel p-4">
-          <h2 className="text-lg font-semibold">證據摘要</h2>
-          <div className="mt-3 grid gap-2">
-            <EvidenceRow label="最強理由" value={topReason} tone="gain" />
-            <EvidenceRow label="最大風險" value={topRisk} tone="loss" />
-            <EvidenceRow label="資料信心" value={plan.data_quality[plan.data_quality.length - 1] ?? "資料來源已列出。"} />
-          </div>
-        </div>
-      </section>
-
-      <section className="grid gap-3 md:grid-cols-5">
-        {Object.entries(plan.score_breakdown).map(([key, value]) => (
-          <div key={key} className="rounded-md border border-line bg-panel p-3">
-            <div className="text-xs text-muted">{breakdownLabel(key)}</div>
-            <div className={`mt-1 text-lg font-semibold ${value < 0 ? "text-loss" : ""}`}>
-              {value > 0 ? "+" : ""}
-              {formatNumber(value, 1)}
-            </div>
-          </div>
-        ))}
-      </section>
-
-      <section className="grid gap-3 lg:grid-cols-3">
-        {Object.entries(plan.checklist).map(([title, items]) => (
-          <InfoList
-            key={title}
-            title={title}
-            items={items}
-            tone={title === "進場條件" ? "gain" : title === "不進場條件" ? "loss" : "warn"}
-          />
-        ))}
-      </section>
-
-      <section className="grid gap-3 lg:grid-cols-3">
-        {plan.scenarios.map((scenario) => (
-          <section key={scenario.name} className="rounded-md border border-line bg-panel p-4">
-            <h2 className="text-lg font-semibold">{scenario.name}</h2>
-            <div className="mt-3 space-y-3 text-sm leading-6">
-              <ScenarioLine label="條件" value={scenario.condition} />
-              <ScenarioLine label="行動" value={scenario.action} />
-              <ScenarioLine label="失效" value={scenario.invalidation} />
-            </div>
-          </section>
-        ))}
-      </section>
-
-      <section className="grid gap-3 md:grid-cols-2">
-        <TextPanel title="重新檢查觸發點" items={plan.next_review_triggers} />
-        <TextPanel title="資料來源與限制" items={plan.data_quality} />
-      </section>
-    </div>
-  );
-}
-
-function WatchlistTab({
-  input,
-  loading,
-  error,
-  results,
-  onInputChange,
-  onCompare,
-  onSelect
+function AppHeader({
+  activeView,
+  menuOpen,
+  theme,
+  onMenuOpenChange,
+  onThemeChange,
+  onViewChange
 }: {
-  input: string;
-  loading: boolean;
-  error: string | null;
-  results: AnalysisResponse[];
-  onInputChange: (value: string) => void;
-  onCompare: () => void;
-  onSelect: (symbol: string) => void;
+  activeView: DashboardView;
+  menuOpen: boolean;
+  theme: Theme;
+  onMenuOpenChange: (value: boolean) => void;
+  onThemeChange: (theme: Theme) => void;
+  onViewChange: (view: DashboardView) => void;
 }) {
-  const breadth = useMemo(() => {
-    return results.reduce(
-      (acc, item) => {
-        acc[item.decision_plan.bias] += 1;
-        return acc;
-      },
-      { bullish: 0, neutral: 0, bearish: 0 }
-    );
-  }, [results]);
-  const leader = results[0];
+  const currentView = DASHBOARD_VIEWS.find((item) => item.id === activeView) ?? DASHBOARD_VIEWS[0];
 
   return (
-    <div className="flex flex-col gap-3">
+    <header className="relative flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+      <div className="flex min-w-0 items-center gap-3">
+        <div className="relative shrink-0">
+          <button
+            aria-expanded={menuOpen}
+            className="focus-ring h-11 rounded-md border border-line bg-panel px-4 text-sm font-semibold text-ink"
+            type="button"
+            onClick={() => onMenuOpenChange(!menuOpen)}
+          >
+            ☰ 主選單
+          </button>
+          {menuOpen && (
+            <div className="absolute left-0 top-12 z-20 w-72 rounded-md border border-line bg-panel p-2 shadow-lg">
+              {DASHBOARD_VIEWS.map((item) => (
+                <button
+                  key={item.id}
+                  aria-current={activeView === item.id ? "page" : undefined}
+                  className={`focus-ring block w-full rounded-md px-3 py-2 text-left ${
+                    activeView === item.id ? "bg-ink text-panel" : "text-ink hover:bg-control"
+                  }`}
+                  type="button"
+                  onClick={() => {
+                    onViewChange(item.id);
+                    onMenuOpenChange(false);
+                  }}
+                >
+                  <span className="block text-sm font-semibold">{item.label}</span>
+                  <span className={`mt-0.5 block text-xs ${activeView === item.id ? "text-panel/80" : "text-muted"}`}>
+                    {item.description}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="min-w-0">
+          <h1 className="truncate text-2xl font-semibold tracking-normal">台股 AI 即時看盤</h1>
+          <p className="mt-1 text-sm text-muted">{currentView.description}</p>
+        </div>
+      </div>
+      <ThemeToggle theme={theme} onChange={onThemeChange} />
+    </header>
+  );
+}
+
+function CommandBar({
+  analysis,
+  loading,
+  range,
+  refreshing,
+  symbol,
+  onRangeChange,
+  onSubmit,
+  onSymbolChange
+}: {
+  analysis: AnalysisResponse | null;
+  loading: boolean;
+  range: string;
+  refreshing: boolean;
+  symbol: string;
+  onRangeChange: (value: string) => void;
+  onSubmit: (event: FormEvent) => void;
+  onSymbolChange: (value: string) => void;
+}) {
+  return (
+    <section className="rounded-md border border-line bg-panel p-3">
+      <form className="grid gap-3 md:grid-cols-[180px_150px_120px_1fr] md:items-end" onSubmit={onSubmit}>
+        <label className="flex flex-col gap-1 text-sm font-medium">
+          股票代號
+          <input
+            className="focus-ring h-11 rounded-md border border-line bg-panel px-3 text-base text-ink"
+            value={symbol}
+            onChange={(event) => onSymbolChange(event.target.value.toUpperCase())}
+            placeholder="2330"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-sm font-medium">
+          圖表期間
+          <select
+            className="focus-ring h-11 rounded-md border border-line bg-panel px-3 text-ink"
+            value={range}
+            onChange={(event) => onRangeChange(event.target.value)}
+          >
+            <option value="1y">1 年</option>
+            <option value="3y">3 年</option>
+            <option value="5y">5 年</option>
+          </select>
+        </label>
+        <button
+          className="focus-ring h-11 rounded-md bg-ink px-5 font-semibold text-panel disabled:opacity-60"
+          type="submit"
+          disabled={loading || refreshing}
+        >
+          {loading || refreshing ? "更新中" : "立即更新"}
+        </button>
+        <div className="flex min-h-11 flex-wrap items-center gap-2 text-sm text-muted md:justify-end">
+          <span className="rounded-md border border-line bg-control px-3 py-2">
+            最新價 {analysis ? formatNumber(analysis.technical.latest_close) : "-"}
+          </span>
+          <span className="rounded-md border border-line bg-control px-3 py-2">
+            資料 {analysis?.data_sources.price ?? "-"}
+          </span>
+        </div>
+      </form>
+    </section>
+  );
+}
+
+function WatchlistEditor({
+  saving,
+  value,
+  onChange,
+  onSave
+}: {
+  saving: boolean;
+  value: string;
+  onChange: (value: string) => void;
+  onSave: () => void;
+}) {
+  return (
+    <section className="rounded-md border border-line bg-panel p-4">
+      <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
+        <label className="flex flex-col gap-1 text-sm font-medium">
+          AI 掃描清單
+          <input
+            className="focus-ring h-11 rounded-md border border-line bg-panel px-3 text-base text-ink"
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            placeholder={DEFAULT_WATCHLIST}
+          />
+        </label>
+        <button
+          className="focus-ring h-11 rounded-md bg-ink px-5 font-semibold text-panel disabled:opacity-60"
+          type="button"
+          onClick={onSave}
+          disabled={saving}
+        >
+          {saving ? "儲存中" : "儲存清單"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function PositionEditor({
+  currentPosition,
+  entryPrice,
+  highestPrice,
+  quantity,
+  saving,
+  onClose,
+  onEntryPriceChange,
+  onHighestPriceChange,
+  onQuantityChange,
+  onSave
+}: {
+  currentPosition: PositionItem | undefined;
+  entryPrice: string;
+  highestPrice: string;
+  quantity: string;
+  saving: boolean;
+  onClose: () => void;
+  onEntryPriceChange: (value: string) => void;
+  onHighestPriceChange: (value: string) => void;
+  onQuantityChange: (value: string) => void;
+  onSave: () => void;
+}) {
+  return (
+    <section className="rounded-md border border-line bg-panel p-4">
+      <div className="grid gap-3 md:grid-cols-5 md:items-end">
+        <label className="flex flex-col gap-1 text-sm font-medium">
+          買進價
+          <input
+            className="focus-ring h-11 rounded-md border border-line bg-panel px-3 text-base text-ink"
+            inputMode="decimal"
+            value={entryPrice}
+            onChange={(event) => onEntryPriceChange(event.target.value)}
+            placeholder="可空白"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-sm font-medium">
+          持有最高價
+          <input
+            className="focus-ring h-11 rounded-md border border-line bg-panel px-3 text-base text-ink"
+            inputMode="decimal"
+            value={highestPrice}
+            onChange={(event) => onHighestPriceChange(event.target.value)}
+            placeholder="可空白"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-sm font-medium">
+          股數
+          <input
+            className="focus-ring h-11 rounded-md border border-line bg-panel px-3 text-base text-ink"
+            inputMode="decimal"
+            value={quantity}
+            onChange={(event) => onQuantityChange(event.target.value)}
+            placeholder="可空白"
+          />
+        </label>
+        <button
+          className="focus-ring h-11 rounded-md bg-ink px-5 font-semibold text-panel disabled:opacity-60"
+          type="button"
+          onClick={onSave}
+          disabled={saving}
+        >
+          {currentPosition ? "更新持倉" : "儲存持倉"}
+        </button>
+        <button
+          className="focus-ring h-11 rounded-md border border-line bg-control px-5 font-semibold text-ink disabled:opacity-50"
+          type="button"
+          onClick={onClose}
+          disabled={saving || !currentPosition}
+        >
+          結束持倉
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function SettingsPanel({
+  analysis,
+  autoRefresh,
+  lastUpdatedAt,
+  loading,
+  refreshInfo,
+  refreshing,
+  theme,
+  onAutoRefreshChange,
+  onCreatePdf,
+  onRefresh,
+  onThemeChange
+}: {
+  analysis: AnalysisResponse | null;
+  autoRefresh: boolean;
+  lastUpdatedAt: string | null;
+  loading: boolean;
+  refreshInfo: MarketRefreshInfo | null;
+  refreshing: boolean;
+  theme: Theme;
+  onAutoRefreshChange: (value: boolean) => void;
+  onCreatePdf: () => void;
+  onRefresh: () => void;
+  onThemeChange: (theme: Theme) => void;
+}) {
+  return (
+    <section className="grid gap-4 lg:grid-cols-[0.85fr_1.15fr]">
       <section className="rounded-md border border-line bg-panel p-4">
-        <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
-          <label className="flex flex-col gap-1 text-sm font-medium">
-            自選股清單
-            <input
-              className="focus-ring h-11 rounded-md border border-line bg-panel px-3 text-base text-ink"
-              value={input}
-              onChange={(event) => onInputChange(event.target.value)}
-              placeholder="2330, 2454, 2317, 0050"
-            />
+        <h2 className="text-lg font-semibold">設定</h2>
+        <div className="mt-4 grid gap-3">
+          <ThemeToggle theme={theme} onChange={onThemeChange} />
+          <label className="flex h-11 items-center gap-2 rounded-md border border-line bg-control px-3 text-sm font-medium">
+            <input checked={autoRefresh} onChange={(event) => onAutoRefreshChange(event.target.checked)} type="checkbox" />
+            自動更新
           </label>
           <button
             className="focus-ring h-11 rounded-md bg-ink px-5 font-semibold text-panel disabled:opacity-60"
             type="button"
-            onClick={onCompare}
-            disabled={loading}
+            onClick={onRefresh}
+            disabled={loading || refreshing}
           >
-            {loading ? "比較中" : "開始比較"}
+            {loading || refreshing ? "更新中" : "立即更新"}
+          </button>
+          <button
+            className="focus-ring h-11 rounded-md border border-line bg-control px-5 font-semibold text-ink disabled:opacity-50"
+            type="button"
+            onClick={onCreatePdf}
+            disabled={!analysis}
+          >
+            匯出 PDF
           </button>
         </div>
-        {error && <div className="mt-3 rounded-md bg-warn/10 p-3 text-sm text-warn">{error}</div>}
       </section>
-
-      <section className="grid gap-3 md:grid-cols-4">
-        <DecisionStat label="已比較" value={`${results.length} 檔`} />
-        <DecisionStat label="偏多" value={`${breadth.bullish} 檔`} />
-        <DecisionStat label="中性" value={`${breadth.neutral} 檔`} />
-        <DecisionStat label="偏空" value={`${breadth.bearish} 檔`} />
+      <section className="rounded-md border border-line bg-panel p-4">
+        <h2 className="text-lg font-semibold">更新狀態</h2>
+        <div className="mt-4 grid gap-2 sm:grid-cols-2">
+          <StatusTile label="市場狀態" value={refreshInfo?.label ?? "-"} />
+          <StatusTile label="更新頻率" value={refreshInfo ? formatDuration(refreshInfo.refresh_interval_seconds) : "-"} />
+          <StatusTile label="下次更新" value={refreshInfo ? formatTime(refreshInfo.next_refresh_at) : "-"} />
+          <StatusTile label="最後更新" value={lastUpdatedAt ? formatDateTime(lastUpdatedAt) : "-"} />
+          <StatusTile label="價格來源" value={analysis?.data_sources.price ?? "-"} />
+          <StatusTile label="新聞來源" value={analysis?.data_sources.news ?? "-"} />
+        </div>
+        <p className="mt-3 text-sm leading-6 text-muted">{refreshInfo?.message ?? "尚未讀取市場時鐘。"}</p>
       </section>
+    </section>
+  );
+}
 
-      {leader && (
-        <section className={`rounded-md border p-4 ${biasClass(leader.decision_plan.bias)}`}>
-          <div className="text-sm font-medium">目前排序第一</div>
-          <div className="mt-1 text-2xl font-bold">
-            {leader.symbol}{leader.name ? ` ${leader.name}` : ""} · {formatNumber(leader.adjusted_score, 0)} 分
-          </div>
-          <p className="mt-2 text-sm leading-6">{leader.decision_plan.action}</p>
-        </section>
+function MarketStatus({
+  refreshInfo,
+  loading,
+  refreshing,
+  autoRefresh,
+  lastUpdatedAt,
+  onAutoRefreshChange,
+  onRefresh
+}: {
+  refreshInfo: MarketRefreshInfo | null;
+  loading: boolean;
+  refreshing: boolean;
+  autoRefresh: boolean;
+  lastUpdatedAt: string | null;
+  onAutoRefreshChange: (value: boolean) => void;
+  onRefresh: () => void;
+}) {
+  const tone = refreshInfo?.is_regular_session ? "gain" : refreshInfo?.is_live_refresh ? "warn" : "neutral";
+  const label = refreshInfo?.label ?? "讀取中";
+  const interval = refreshInfo ? formatDuration(refreshInfo.refresh_interval_seconds) : "-";
+
+  return (
+    <section className="min-w-0 rounded-md border border-line bg-panel p-4">
+      <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-center">
+        <div className="grid gap-2 md:grid-cols-4">
+          <StatusTile label="市場狀態" value={label} tone={tone} />
+          <StatusTile label="台北時間" value={refreshInfo ? formatDateTime(refreshInfo.now) : "-"} />
+          <StatusTile label="更新頻率" value={interval} />
+          <StatusTile label="下次更新" value={refreshInfo ? formatTime(refreshInfo.next_refresh_at) : "-"} />
+        </div>
+        <div className="flex flex-wrap items-center gap-2 md:justify-end">
+          <label className="flex h-10 items-center gap-2 rounded-md border border-line bg-control px-3 text-sm font-medium">
+            <input
+              checked={autoRefresh}
+              onChange={(event) => onAutoRefreshChange(event.target.checked)}
+              type="checkbox"
+            />
+            自動更新
+          </label>
+          <button
+            className="focus-ring h-10 rounded-md bg-ink px-4 text-sm font-semibold text-panel disabled:opacity-60"
+            type="button"
+            onClick={onRefresh}
+            disabled={loading || refreshing}
+          >
+            {loading || refreshing ? "更新中" : "立即更新"}
+          </button>
+        </div>
+      </div>
+      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted">
+        <span>{refreshInfo?.message ?? "正在讀取市場時鐘。"}</span>
+        {lastUpdatedAt && <span>最後更新：{formatDateTime(lastUpdatedAt)}</span>}
+        {refreshing && <span className="font-semibold text-gain">背景更新中</span>}
+      </div>
+    </section>
+  );
+}
+
+function AiPickerPanel({
+  result,
+  loading,
+  watchlistCount,
+  onSelect
+}: {
+  result: AiStockPicksResponse | null;
+  loading: boolean;
+  watchlistCount: number;
+  onSelect: (symbol: string) => void;
+}) {
+  const market = result?.market_snapshot;
+  const picks = result?.top_picks ?? [];
+
+  return (
+    <section className="rounded-md border border-line bg-panel p-4">
+      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+        <div>
+          <h2 className="text-lg font-semibold">AI 盤中選股</h2>
+          <p className="mt-1 text-sm leading-6 text-muted">用目前盤勢、技術面、籌碼與風險分數掃描自選清單。</p>
+        </div>
+        <span className="rounded-md border border-line bg-control px-3 py-1.5 text-sm text-muted">
+          掃描 {result?.universe.length ?? watchlistCount} 檔
+        </span>
+      </div>
+
+      {market && (
+        <div className="mt-4 grid gap-2 sm:grid-cols-3">
+          <StatusTile label="盤勢" value={market.status} tone={lightTone(market.light)} />
+          <StatusTile label="大盤分數" value={formatNumber(market.score, 0)} tone={lightTone(market.light)} />
+          <StatusTile label="燈號" value={lightLabel(market.light)} tone={lightTone(market.light)} />
+        </div>
       )}
 
-      <section className="overflow-x-auto rounded-md border border-line bg-panel">
-        <table className="w-full min-w-[760px] border-collapse text-left text-sm">
-          <thead className="border-b border-line bg-control text-xs text-muted">
+      {loading && <EmptyState title="正在掃描" detail="AI 選股讀取中。" />}
+
+      {!loading && !picks.length && <EmptyState title="尚無選股結果" detail="按上方更新後會顯示候選清單。" />}
+
+      <div className="mt-4 grid gap-3">
+        {picks.map((pick) => (
+          <AiPickRow key={pick.symbol} pick={pick} onSelect={onSelect} />
+        ))}
+      </div>
+
+      {result?.watch_notes.length ? (
+        <ul className="mt-4 space-y-1 text-xs leading-5 text-muted">
+          {result.watch_notes.slice(0, 3).map((note, index) => (
+            <li key={`${index}-${note}`}>{note}</li>
+          ))}
+        </ul>
+      ) : null}
+    </section>
+  );
+}
+
+function AiPickRow({ pick, onSelect }: { pick: AiStockPick; onSelect: (symbol: string) => void }) {
+  return (
+    <article className="rounded-md border border-line bg-control p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-xs text-muted">#{pick.rank} {pick.industry}</div>
+          <h3 className="mt-1 text-lg font-semibold">
+            {pick.symbol}{pick.name ? ` ${pick.name}` : ""}
+          </h3>
+          <div className="mt-1 text-sm text-muted">
+            最新價 {formatNumber(pick.latest_close)} / {biasLabel(pick.bias)} / 信心 {pick.confidence}
+          </div>
+        </div>
+        <div className="text-right">
+          <div className={`text-3xl font-bold ${scoreClass(pick.selection_score)}`}>{formatNumber(pick.selection_score, 0)}</div>
+          <button
+            className="focus-ring mt-2 rounded-md border border-line bg-panel px-3 py-1.5 text-sm font-semibold text-ink"
+            type="button"
+            onClick={() => onSelect(pick.symbol)}
+          >
+            看分析
+          </button>
+        </div>
+      </div>
+      <p className="mt-3 text-sm leading-6 text-muted">{pick.thesis}</p>
+    </article>
+  );
+}
+
+function AnalysisPanel({ analysis, loading }: { analysis: AnalysisResponse | null; loading: boolean }) {
+  if (loading) {
+    return (
+      <section className="min-w-0 rounded-md border border-line bg-panel p-4">
+        <EmptyState title="正在更新分析" detail="讀取個股、風險燈號和停利停損資訊。" />
+      </section>
+    );
+  }
+
+  if (!analysis) {
+    return (
+      <section className="min-w-0 rounded-md border border-line bg-panel p-4">
+        <EmptyState title="尚無個股分析" detail="輸入股票代號後按更新。" />
+      </section>
+    );
+  }
+
+  const strategy = analysis.strategy_judgement;
+  const close = analysis.technical.latest_close;
+  const dataSourceCount = Object.values(analysis.data_sources).filter((source) => source === "sample" || source === "unknown").length;
+
+  return (
+    <section className="min-w-0 rounded-md border border-line bg-panel p-4">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div>
+          <div className="text-sm text-muted">{analysis.analysis_date}</div>
+          <h2 className="mt-1 text-2xl font-semibold">
+            {analysis.symbol}{analysis.name ? ` ${analysis.name}` : ""}
+          </h2>
+          <p className="mt-2 text-sm leading-6 text-muted">{analysis.decision_plan.action}</p>
+        </div>
+        <div className="text-left md:text-right">
+          <div className={`text-5xl font-bold ${scoreClass(analysis.adjusted_score)}`}>
+            {formatNumber(analysis.adjusted_score, 0)}
+          </div>
+          <div className="mt-1 text-lg font-semibold">{analysis.recommendation}</div>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-2 sm:grid-cols-4">
+        <StatusTile label="最新價" value={formatNumber(close)} />
+        <StatusTile label="MA20" value={formatNumber(analysis.technical.ma.ma20)} />
+        <StatusTile label="RSI14" value={formatNumber(analysis.technical.rsi.rsi14)} />
+        <StatusTile label="ATR 停損" value={formatNumber(analysis.stop_loss.atr_stop)} tone="warn" />
+      </div>
+
+      <div className="mt-4">
+        <RiskLightBadges lights={analysis.risk_lights} />
+      </div>
+
+      <div className="mt-4 grid gap-3 md:grid-cols-2">
+        <SimplePanel title="AI 判斷" tone={stanceTone(strategy.stance)}>
+          <div className="text-base font-semibold">{strategy.headline}</div>
+          <p className="mt-2 text-sm leading-6">{strategy.action}</p>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <StatusTile label="時機分數" value={formatNumber(strategy.timing_score, 0)} tone={stanceTone(strategy.stance)} />
+            <StatusTile label="策略" value={stanceLabel(strategy.stance)} tone={stanceTone(strategy.stance)} />
+          </div>
+        </SimplePanel>
+        <SimplePanel title="資料來源" tone={dataSourceCount >= 2 ? "warn" : "neutral"}>
+          <div className="grid grid-cols-2 gap-2 text-sm">
+            {Object.entries(analysis.data_sources).map(([key, source]) => (
+              <div key={key} className="rounded-md border border-line bg-control px-3 py-2">
+                <div className="text-xs text-muted">{sourceLabel(key)}</div>
+                <div className="mt-1 font-semibold">{source}</div>
+              </div>
+            ))}
+          </div>
+        </SimplePanel>
+      </div>
+    </section>
+  );
+}
+
+function WatchlistPanel({
+  items,
+  symbols,
+  onSelect
+}: {
+  items: WatchlistItem[];
+  symbols: string[];
+  onSelect: (symbol: string) => void;
+}) {
+  const display = items.length ? items.map((item) => item.symbol) : symbols;
+  return (
+    <section className="min-w-0 rounded-md border border-line bg-panel p-4">
+      <h2 className="text-lg font-semibold">自選股</h2>
+      <p className="mt-1 text-sm text-muted">這份清單同時用於 AI 盤中掃描。</p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {display.map((item) => (
+          <button
+            key={item}
+            className="focus-ring rounded-md border border-line bg-control px-3 py-2 text-sm font-semibold text-ink"
+            type="button"
+            onClick={() => onSelect(item)}
+          >
+            {item}
+          </button>
+        ))}
+        {!display.length && <span className="text-sm text-muted">尚未建立自選股。</span>}
+      </div>
+    </section>
+  );
+}
+
+function PositionPanel({
+  positions,
+  onSelect
+}: {
+  positions: PositionItem[];
+  onSelect: (symbol: string) => void;
+}) {
+  return (
+    <section className="min-w-0 rounded-md border border-line bg-panel p-4">
+      <div>
+        <h2 className="text-lg font-semibold">持倉</h2>
+        <p className="mt-1 text-sm text-muted">點選載入後，可在上方調整買進價、最高價和股數。</p>
+      </div>
+      <div className="mt-3 overflow-x-auto">
+        <table className="w-full min-w-[540px] border-collapse text-left text-sm">
+          <thead className="border-b border-line text-xs text-muted">
             <tr>
-              <th className="px-3 py-2 font-semibold">標的</th>
-              <th className="px-3 py-2 font-semibold">分數</th>
-              <th className="px-3 py-2 font-semibold">偏向</th>
-              <th className="px-3 py-2 font-semibold">建議上限</th>
-              <th className="px-3 py-2 font-semibold">主要行動</th>
-              <th className="px-3 py-2 font-semibold">操作</th>
+              <th className="py-2 pr-3 font-semibold">股票</th>
+              <th className="py-2 pr-3 font-semibold">買進價</th>
+              <th className="py-2 pr-3 font-semibold">股數</th>
+              <th className="py-2 pr-3 font-semibold">最高價</th>
+              <th className="py-2 pr-3 font-semibold">操作</th>
             </tr>
           </thead>
           <tbody>
-            {results.map((item) => (
-              <tr key={item.symbol} className="border-b border-line last:border-b-0">
-                <td className="px-3 py-3 font-semibold">
-                  {item.symbol}{item.name ? ` ${item.name}` : ""}
-                </td>
-                <td className={`px-3 py-3 font-semibold ${scoreClass(item.adjusted_score)}`}>
-                  {formatNumber(item.adjusted_score, 0)}
-                </td>
-                <td className="px-3 py-3">{biasLabel(item.decision_plan.bias)}</td>
-                <td className="px-3 py-3">{item.decision_plan.research_position_size}</td>
-                <td className="px-3 py-3 text-muted">{item.decision_plan.action}</td>
-                <td className="px-3 py-3">
+            {positions.map((item) => (
+              <tr key={item.id} className="border-b border-line last:border-b-0">
+                <td className="py-3 pr-3 font-semibold">{item.symbol}</td>
+                <td className="py-3 pr-3">{formatNumber(item.entry_price)}</td>
+                <td className="py-3 pr-3">{formatNumber(item.quantity, 0)}</td>
+                <td className="py-3 pr-3">{formatNumber(item.highest_price)}</td>
+                <td className="py-3 pr-3">
                   <button
                     className="focus-ring rounded-md border border-line bg-control px-3 py-1.5 font-semibold text-ink"
                     type="button"
                     onClick={() => onSelect(item.symbol)}
                   >
-                    分析
+                    載入
                   </button>
                 </td>
               </tr>
             ))}
-            {!results.length && (
+            {!positions.length && (
               <tr>
-                <td className="px-3 py-8 text-center text-muted" colSpan={6}>
-                  輸入自選股後按「開始比較」，這裡會依分數排序。
+                <td className="py-6 text-center text-muted" colSpan={5}>
+                  目前沒有開放持倉。
                 </td>
               </tr>
             )}
           </tbody>
         </table>
-      </section>
-    </div>
-  );
-}
-
-function PositionTab({ analysis, position }: { analysis: AnalysisResponse; position: PositionSnapshot }) {
-  const advice = useMemo(() => buildPositionAdvice(analysis, position.entryPrice), [analysis, position.entryPrice]);
-
-  if (!position.entryPrice) {
-    return (
-      <section className="rounded-md border border-line bg-panel p-4">
-        <h2 className="text-lg font-semibold">持倉停利停損</h2>
-        <p className="mt-3 text-sm leading-6 text-muted">
-          你還沒有輸入「我的買進價」。輸入後再按「開始分析」，我會幫你算目前損益、固定停損、ATR 停損與移動停利。
-        </p>
-      </section>
-    );
-  }
-
-  const stop = analysis.stop_loss;
-  const trailing = analysis.trailing_take_profit;
-  const close = analysis.technical.latest_close;
-  const profitPercent = ((close - position.entryPrice) / position.entryPrice) * 100;
-
-  return (
-    <div className="grid gap-3 lg:grid-cols-[1fr_1.25fr]">
-      <section className="rounded-md border border-line bg-panel p-4">
-        <div className={`rounded-md border p-4 ${toneClass(advice.tone)}`}>
-          <div className="text-sm font-medium">持倉判斷</div>
-          <div className="mt-1 text-2xl font-bold">{advice.title}</div>
-          <p className="mt-2 text-sm leading-6">{advice.message}</p>
-        </div>
-
-        <div className="mt-4 grid grid-cols-2 gap-2">
-          <PriceBox label="我的買進價" value={position.entryPrice} />
-          <PriceBox label="最新收盤價" value={close} />
-          <PriceBox label="目前損益" value={profitPercent} suffix="%" signed />
-          <PriceBox label="移動停利價" value={trailing.current_take_profit_price} />
-        </div>
-
-        <ul className="mt-4 space-y-2 text-sm leading-6 text-muted">
-          {advice.points.map((point) => (
-            <li key={point}>• {point}</li>
-          ))}
-        </ul>
-      </section>
-
-      <section className="rounded-md border border-line bg-panel p-4">
-        <h2 className="text-lg font-semibold">停損停利線</h2>
-        <div className="mt-3 grid gap-2 md:grid-cols-2">
-          <PriceRow label="固定 -5% 停損" value={stop.fixed_5_percent} />
-          <PriceRow label="固定 -8% 停損" value={stop.fixed_8_percent} />
-          <PriceRow label="固定 -10% 停損" value={stop.fixed_10_percent} />
-          <PriceRow label="ATR 停損" value={stop.atr_stop} />
-          <PriceRow label="MA20 跌破" value={stop.ma20_stop_triggered ? "已觸發" : "未觸發"} />
-          <PriceRow label="MA60 跌破" value={stop.ma60_stop_triggered ? "已觸發" : "未觸發"} />
-          <PriceRow label="移動停利用高點" value={trailing.highest_price_used} />
-          <PriceRow label="風險報酬比" value={trailing.risk_reward_ratio} />
-        </div>
-        <p className="mt-3 text-xs leading-5 text-muted">
-          移動停利公式：最高價 - 2 × ATR14。若你沒有填持倉最高價，系統會用近期高點估算。
-        </p>
-      </section>
-    </div>
-  );
-}
-
-function SignalsTab({ analysis }: { analysis: AnalysisResponse }) {
-  return (
-    <div className="grid gap-3 md:grid-cols-2">
-      <InfoList title="主要理由" items={analysis.reasons} tone="gain" />
-      <InfoList title="風險提醒" items={analysis.risks} tone="loss" />
-      <TextPanel title="技術訊號" items={analysis.technical.signals} />
-      <TextPanel title="法人訊號" items={analysis.institutional.signals} />
-    </div>
-  );
-}
-
-function AiTab({ analysis }: { analysis: AnalysisResponse }) {
-  const enabled = Boolean(analysis.sentiment.model);
-  return (
-    <div className="grid gap-3 md:grid-cols-[320px_1fr]">
-      <section className="rounded-md border border-line bg-panel p-4">
-        <h2 className="text-lg font-semibold">AI 狀態</h2>
-        <div className={`mt-3 rounded-md border p-3 ${enabled ? "border-gain bg-gain/10 text-gain" : "border-warn bg-warn/10 text-warn"}`}>
-          {enabled ? "OpenAI 已啟用" : "OpenAI 尚未啟用"}
-        </div>
-        <p className="mt-3 text-sm leading-6 text-muted">
-          {enabled
-            ? `目前新聞摘要使用模型：${analysis.sentiment.model}`
-            : "目前沒有設定 OpenAI API key，所以新聞摘要使用規則式估計。技術指標、停利停損與評分仍可正常計算。"}
-        </p>
-      </section>
-      <div className="grid gap-3">
-        <TextPanel title="AI 新聞摘要" items={[analysis.sentiment.summary, ...analysis.sentiment.headlines]} />
-        <SnapshotPromptPanel prompt={analysis.decision_plan.ai_snapshot_prompt} />
       </div>
-    </div>
-  );
-}
-
-function SnapshotPromptPanel({ prompt }: { prompt: string }) {
-  return (
-    <section className="rounded-md border border-line bg-panel p-4">
-      <h2 className="text-lg font-semibold">AI 分析快照</h2>
-      <textarea
-        className="mt-3 min-h-[16rem] w-full resize-y rounded-md border border-line bg-control p-3 text-sm leading-6 text-ink"
-        readOnly
-        value={prompt}
-      />
     </section>
   );
 }
@@ -652,7 +1070,7 @@ function SnapshotPromptPanel({ prompt }: { prompt: string }) {
 function ThemeToggle({ theme, onChange }: { theme: Theme; onChange: (theme: Theme) => void }) {
   return (
     <div className="flex items-center gap-2">
-      <span className="text-sm text-muted">外觀</span>
+      <span className="text-sm text-muted">主題</span>
       <div className="rounded-md border border-line bg-control p-1">
         {(["light", "dark"] as const).map((item) => (
           <button
@@ -663,7 +1081,7 @@ function ThemeToggle({ theme, onChange }: { theme: Theme; onChange: (theme: Them
             type="button"
             onClick={() => onChange(item)}
           >
-            {item === "light" ? "淺色" : "深色"}
+            {item === "light" ? "亮色" : "暗色"}
           </button>
         ))}
       </div>
@@ -671,243 +1089,153 @@ function ThemeToggle({ theme, onChange }: { theme: Theme; onChange: (theme: Them
   );
 }
 
-function InfoList({
-  title,
-  items,
-  tone,
-  limit = 8
-}: {
-  title: string;
-  items: string[];
-  tone: "gain" | "warn" | "loss";
-  limit?: number;
-}) {
-  const toneColor = tone === "gain" ? "text-gain" : tone === "warn" ? "text-warn" : "text-loss";
+function StatusTile({ label, value, tone = "neutral" }: { label: string; value: string; tone?: Tone }) {
   return (
-    <section className="rounded-md border border-line bg-panel p-4">
-      <h2 className={`text-lg font-semibold ${toneColor}`}>{title}</h2>
-      <ul className="mt-3 space-y-2 text-sm leading-6">
-        {items.slice(0, limit).map((item, index) => (
-          <li key={`${index}-${item}`}>• {item}</li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-function TextPanel({ title, items }: { title: string; items: string[] }) {
-  return (
-    <section className="rounded-md border border-line bg-panel p-4">
-      <h2 className="text-lg font-semibold">{title}</h2>
-      <ul className="mt-3 space-y-2 text-sm leading-6 text-muted">
-        {items.length ? items.slice(0, 8).map((item, index) => <li key={`${index}-${item}`}>• {item}</li>) : <li>尚無訊號</li>}
-      </ul>
-    </section>
-  );
-}
-
-function DecisionStat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-md border border-line bg-panel/70 p-3">
+    <div className={`rounded-md border p-3 ${toneClass(tone)}`}>
       <div className="text-xs text-muted">{label}</div>
       <div className="mt-1 text-base font-semibold leading-6">{value}</div>
     </div>
   );
 }
 
-function EvidenceRow({
-  label,
-  value,
-  tone = "neutral"
-}: {
-  label: string;
-  value: string;
-  tone?: "gain" | "loss" | "neutral";
-}) {
-  const color = tone === "gain" ? "text-gain" : tone === "loss" ? "text-loss" : "text-ink";
+function SimplePanel({ title, tone, children }: { title: string; tone: Tone; children: ReactNode }) {
   return (
-    <div className="rounded-md border border-line bg-control p-3">
-      <div className="text-xs text-muted">{label}</div>
-      <div className={`mt-1 text-sm font-medium leading-6 ${color}`}>{value}</div>
+    <section className={`rounded-md border p-3 ${toneClass(tone)}`}>
+      <h3 className="text-sm font-semibold">{title}</h3>
+      <div className="mt-2">{children}</div>
+    </section>
+  );
+}
+
+function Notice({ tone, children }: { tone: Tone; children: ReactNode }) {
+  return <div className={`mt-3 rounded-md border p-3 text-sm ${toneClass(tone)}`}>{children}</div>;
+}
+
+function EmptyState({ title, detail }: { title: string; detail: string }) {
+  return (
+    <div className="rounded-md border border-line bg-control p-4">
+      <div className="font-semibold">{title}</div>
+      <p className="mt-1 text-sm text-muted">{detail}</p>
     </div>
   );
 }
 
-function ScenarioLine({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <div className="text-xs font-semibold text-muted">{label}</div>
-      <div className="mt-1 text-muted">{value}</div>
-    </div>
-  );
+function isDashboardView(value: string | null): value is DashboardView {
+  return DASHBOARD_VIEWS.some((item) => item.id === value);
 }
 
-function biasLabel(bias: "bullish" | "neutral" | "bearish") {
+function parseSymbols(value: string) {
+  const seen = new Set<string>();
+  return value
+    .split(/[,\s，、]+/)
+    .map(normalizeSymbol)
+    .filter((item) => {
+      if (!item || seen.has(item)) return false;
+      seen.add(item);
+      return true;
+    })
+    .slice(0, 30);
+}
+
+function normalizeSymbol(value: string) {
+  return value.toUpperCase().replace(/[^A-Z0-9.^-]/g, "").trim();
+}
+
+function parsePositiveNumber(value: string) {
+  if (!value.trim()) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function parseNonNegativeNumber(value: string) {
+  if (!value.trim()) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function readError(value: unknown, fallback: string) {
+  return value instanceof Error ? value.message : fallback;
+}
+
+function toneClass(tone: Tone) {
+  if (tone === "gain") return "border-gain/50 bg-gain/10 text-gain";
+  if (tone === "warn") return "border-warn/50 bg-warn/10 text-warn";
+  if (tone === "loss") return "border-loss/50 bg-loss/10 text-loss";
+  return "border-line bg-panel text-ink";
+}
+
+function lightTone(light: Light): Tone {
+  if (light === "green") return "gain";
+  if (light === "red") return "loss";
+  return "warn";
+}
+
+function stanceTone(stance: AnalysisResponse["strategy_judgement"]["stance"]): Tone {
+  if (stance === "prepare_entry") return "gain";
+  if (stance === "reduce_risk") return "loss";
+  if (stance === "hold_steady") return "warn";
+  return "neutral";
+}
+
+function biasLabel(bias: AiStockPick["bias"]) {
   if (bias === "bullish") return "偏多";
   if (bias === "bearish") return "偏空";
   return "中性";
 }
 
-function biasClass(bias: "bullish" | "neutral" | "bearish") {
-  if (bias === "bullish") return "border-gain bg-gain/10 text-gain";
-  if (bias === "bearish") return "border-loss bg-loss/10 text-loss";
-  return "border-warn bg-warn/10 text-warn";
+function stanceLabel(stance: AnalysisResponse["strategy_judgement"]["stance"]) {
+  const labels: Record<AnalysisResponse["strategy_judgement"]["stance"], string> = {
+    prepare_entry: "準備進場",
+    hold_steady: "續抱觀察",
+    wait: "等待確認",
+    reduce_risk: "降低風險"
+  };
+  return labels[stance];
 }
 
-function breakdownLabel(key: string) {
+function lightLabel(light: Light) {
+  if (light === "green") return "綠燈";
+  if (light === "red") return "紅燈";
+  return "黃燈";
+}
+
+function sourceLabel(key: string) {
   const labels: Record<string, string> = {
-    technical: "技術",
+    price: "價格",
     institutional: "法人",
+    margin: "融資券",
     fundamental: "基本面",
-    sentiment: "新聞情緒",
-    market_risk_adjustment: "市場風險調整"
+    shareholding: "股權",
+    news: "新聞"
   };
   return labels[key] ?? key;
 }
 
-function PriceBox({
-  label,
-  value,
-  suffix,
-  signed
-}: {
-  label: string;
-  value: number | null | undefined;
-  suffix?: string;
-  signed?: boolean;
-}) {
-  const numericValue = typeof value === "number" ? value : null;
-  const color = signed && numericValue !== null ? (numericValue >= 0 ? "text-gain" : "text-loss") : "";
-  return (
-    <div className="rounded-md border border-line bg-control p-3">
-      <div className="text-xs text-muted">{label}</div>
-      <div className={`mt-1 text-lg font-semibold ${color}`}>
-        {numericValue === null ? "-" : `${signed && numericValue > 0 ? "+" : ""}${formatNumber(numericValue)}${suffix ?? ""}`}
-      </div>
-    </div>
-  );
+function formatDateTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("zh-TW", {
+    timeZone: "Asia/Taipei",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  });
 }
 
-function PriceRow({ label, value }: { label: string; value: number | string | null | undefined }) {
-  return (
-    <div className="flex items-center justify-between gap-3 rounded-md border border-line bg-control px-3 py-2 text-sm">
-      <span className="text-muted">{label}</span>
-      <span className="font-semibold">{typeof value === "number" ? formatNumber(value) : value ?? "-"}</span>
-    </div>
-  );
+function formatTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleTimeString("zh-TW", {
+    timeZone: "Asia/Taipei",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  });
 }
 
-function buildPositionAdvice(analysis: AnalysisResponse, entryPrice: number | null) {
-  if (!entryPrice) {
-    return {
-      tone: "neutral" as const,
-      title: "尚未輸入買進價",
-      message: "輸入買進價後，才能判斷你的持倉該續抱、停利或停損。",
-      points: []
-    };
-  }
-
-  const close = analysis.technical.latest_close;
-  const profitPercent = ((close - entryPrice) / entryPrice) * 100;
-  const stop = analysis.stop_loss;
-  const trailing = analysis.trailing_take_profit;
-  const atrStop = stop.atr_stop;
-  const trailingPrice = trailing.current_take_profit_price;
-
-  const points = [
-    `目前損益約 ${formatPercent(profitPercent)}。`,
-    `ATR 停損價是 ${formatNumber(atrStop)}。`,
-    `移動停利價是 ${formatNumber(trailingPrice)}。`
-  ];
-
-  if (atrStop !== null && atrStop !== undefined && close <= atrStop) {
-    return {
-      tone: "loss" as const,
-      title: "停損線已觸發",
-      message: "目前價格已跌到 ATR 停損線下方，風險優先，不建議用情緒凹單。",
-      points
-    };
-  }
-  if (trailingPrice !== null && trailingPrice !== undefined && close <= trailingPrice && close > entryPrice) {
-    return {
-      tone: "warn" as const,
-      title: "移動停利已觸發",
-      message: "目前仍是獲利，但價格已跌破移動停利線，適合考慮分批停利或降低部位。",
-      points
-    };
-  }
-  if (stop.ma60_stop_triggered) {
-    return {
-      tone: "loss" as const,
-      title: "中期趨勢轉弱",
-      message: "價格跌破 MA60，波段防守要優先，適合減碼或依停損規則處理。",
-      points
-    };
-  }
-  if (stop.ma20_stop_triggered) {
-    return {
-      tone: "warn" as const,
-      title: "短線防守",
-      message: "價格跌破 MA20，還不到最壞，但應該提高警覺並避免加碼。",
-      points
-    };
-  }
-  if (profitPercent >= 12) {
-    return {
-      tone: "gain" as const,
-      title: "獲利中，守移動停利",
-      message: "目前獲利幅度不小，可以續抱，但要把移動停利價當成紀律線。",
-      points
-    };
-  }
-  if (profitPercent >= 3) {
-    return {
-      tone: "gain" as const,
-      title: "小獲利，持有觀察",
-      message: "目前有獲利但還不到明確停利區，適合持有並觀察技術面是否轉弱。",
-      points
-    };
-  }
-  if (profitPercent <= -5) {
-    return {
-      tone: "warn" as const,
-      title: "虧損擴大，接近停損",
-      message: "目前虧損已超過 5%，要嚴格看固定停損與 ATR 停損，不要靠感覺補倉。",
-      points
-    };
-  }
-  return {
-    tone: "neutral" as const,
-    title: "持有觀察",
-    message: "目前還沒有明確停利或停損訊號，先照停損線與技術訊號管理。",
-    points
-  };
-}
-
-function toneClass(tone: "gain" | "warn" | "loss" | "neutral") {
-  if (tone === "gain") return "border-gain bg-gain/10 text-gain";
-  if (tone === "warn") return "border-warn bg-warn/10 text-warn";
-  if (tone === "loss") return "border-loss bg-loss/10 text-loss";
-  return "border-line bg-control text-ink";
-}
-
-function parsePositiveNumber(value: string): number | null {
-  const normalized = value.trim().replace(/,/g, "");
-  if (!normalized) return null;
-  const parsed = Number(normalized);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-}
-
-function parseWatchlistSymbols(value: string) {
-  const symbols = value
-    .split(/[\s,，、]+/)
-    .map((item) => item.trim().toUpperCase())
-    .filter(Boolean)
-    .map((item) => item.replace(/[^A-Z0-9.^-]/g, ""))
-    .filter(Boolean);
-  return Array.from(new Set(symbols)).slice(0, 8);
-}
-
-function formatPercent(value: number) {
-  return `${value > 0 ? "+" : ""}${formatNumber(value)}%`;
+function formatDuration(seconds: number) {
+  if (seconds < 60) return `${seconds} 秒`;
+  return `${Math.round(seconds / 60)} 分鐘`;
 }

@@ -53,10 +53,24 @@ class MarketDataProvider(Protocol):
 def normalize_price_frame(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
-    renamed = df.rename(
+    normalized = df.copy()
+    if isinstance(normalized.columns, pd.MultiIndex):
+        normalized.columns = [
+            next((str(part) for part in column if str(part) and str(part) != "nan"), "")
+            for column in normalized.columns
+        ]
+    normalized = normalized.loc[:, ~normalized.columns.duplicated()]
+
+    renamed = normalized.rename(
         columns={
             "max": "high",
             "min": "low",
+            "Date": "date",
+            "Open": "open",
+            "High": "high",
+            "Low": "low",
+            "Close": "close",
+            "Volume": "volume",
             "Trading_Volume": "volume",
             "Trading_money": "trading_value",
             "stock_id": "symbol",
@@ -68,5 +82,9 @@ def normalize_price_frame(df: pd.DataFrame) -> pd.DataFrame:
         raise ValueError(f"Price dataframe missing columns: {missing}")
     out = renamed[required].copy()
     out["date"] = pd.to_datetime(out["date"]).dt.date
+    for column in ["open", "high", "low", "close", "volume"]:
+        values = out[column]
+        if isinstance(values, pd.DataFrame):
+            values = values.iloc[:, 0]
+        out[column] = pd.to_numeric(values, errors="coerce")
     return out.sort_values("date").reset_index(drop=True)
-

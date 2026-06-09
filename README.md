@@ -21,6 +21,8 @@
 
 沒有 token 時，後端會使用 deterministic sample data，方便先驗證 UI、回測、PDF 與通知 dry-run。
 
+Windows 使用者也可以直接執行 `start-stockai.cmd`；啟動器會自動處理中文路徑的 Docker build 問題，並在啟動時重新 build 最新程式碼。
+
 ## 本機後端測試
 
 ```powershell
@@ -37,6 +39,12 @@ npm install
 npm test
 ```
 
+## 一鍵檢查
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/check.ps1
+```
+
 ## 主要功能
 
 - 股票分析：`/api/v1/stocks/{symbol}/analysis`
@@ -46,4 +54,7 @@ npm test
 - 雷達排行：`/api/v1/radar/{kind}`
 - PDF 報告：`/api/v1/reports/{symbol}/pdf`
 - Gmail/Telegram/LINE Messaging API 通知測試：`/api/v1/notifications/test`
-
+- 資料可信度：分析結果會回傳 `data_sources`，前端總覽會標示價格、法人、基本面、股權分布、新聞是否使用 sample fallback。
+- 後端自選清單：`/api/v1/watchlist` 可儲存自選股，前端可同步清單，盤後 job 未指定股票時會優先使用這份清單。
+- 後端持倉清單：`/api/v1/positions` 可儲存買進價、股數與持倉最高價，前端持倉分頁可套用分析。
+- 盤後持倉提醒：`/api/v1/jobs/daily-after-close` 會把 open positions 納入掃描，回傳 `position_alerts` 並在通知摘要列出停損/停利觸發狀態。

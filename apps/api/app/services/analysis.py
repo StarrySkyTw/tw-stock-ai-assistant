@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-from datetime import date
 
+from app.services.calendar import taipei_now, taipei_today
 from app.services.data_providers import MarketDataService
 from app.services.indicators import calculate_indicators, summarize_technical
 from app.services.market_risk import MarketRiskEngine
@@ -10,9 +10,11 @@ from app.services.scoring import (
     recommendation_from_score,
     score_fundamental,
     score_institutional,
+    score_margin,
     score_sentiment,
     score_technical,
     summarize_institutional,
+    summarize_margin,
 )
 from app.services.sentiment import analyze_news_sentiment
 
@@ -36,24 +38,36 @@ class AnalysisService:
         technical = summarize_technical(indicators)
         flows, flow_source = await self.data.institutional_flows(symbol)
         institutional = summarize_institutional(flows)
+        margin_rows, margin_source = await self.data.margin_balances(symbol)
+        margin = summarize_margin(margin_rows)
         fundamentals, fundamental_source = await self.data.fundamentals(symbol)
-        shareholding, _ = await self.data.shareholding(symbol)
+        shareholding, shareholding_source = await self.data.shareholding(symbol)
         news, news_source = await self.data.news(symbol)
         sentiment = await analyze_news_sentiment(symbol, news)
         risk = await self.risk_engine.evaluate()
+        data_sources = {
+            "price": price_source,
+            "institutional": flow_source,
+            "margin": margin_source,
+            "fundamental": fundamental_source,
+            "shareholding": shareholding_source,
+            "news": news_source,
+        }
 
         technical_score, tech_reasons, tech_risks = score_technical(technical)
         institutional_score, inst_reasons, inst_risks = score_institutional(
             institutional, _float_or_none(shareholding.get("large_holder_ratio"))
         )
+        margin_adjustment, margin_reasons, margin_risks = score_margin(margin)
         fundamental_score, fund_reasons, fund_risks = score_fundamental(fundamentals)
         sentiment_score, sentiment_reasons, sentiment_risks = score_sentiment(sentiment)
 
         raw_score = technical_score + institutional_score + fundamental_score + sentiment_score
         adjusted_score = raw_score
+        adjusted_score += margin_adjustment
         risk_adjustment = 0.0
-        risks = tech_risks + inst_risks + fund_risks + sentiment_risks
-        reasons = tech_reasons + inst_reasons + fund_reasons + sentiment_reasons
+        risks = tech_risks + inst_risks + margin_risks + fund_risks + sentiment_risks
+        reasons = tech_reasons + inst_reasons + margin_reasons + fund_reasons + sentiment_reasons
         if risk["lights"]["risk_indicator"] == "red":
             risk_adjustment = -8.0
             adjusted_score += risk_adjustment
@@ -62,6 +76,7 @@ class AnalysisService:
         score_breakdown = {
             "technical": round(technical_score, 2),
             "institutional": round(institutional_score, 2),
+            "margin": round(margin_adjustment, 2),
             "fundamental": round(fundamental_score, 2),
             "sentiment": round(sentiment_score, 2),
             "market_risk_adjustment": risk_adjustment,
@@ -73,6 +88,13 @@ class AnalysisService:
         stop_loss = _stop_loss(effective_entry, technical, close)
         trailing = _trailing_take_profit(
             indicators, effective_entry, highest_price, atr_multiplier=atr_multiplier
+        )
+        strategy_judgement = _strategy_judgement(
+            adjusted_score=adjusted_score,
+            technical=technical,
+            institutional=institutional,
+            margin=margin,
+            risk_lights=risk["lights"],
         )
 
         reasons.append(f"價格資料來源：{price_source}；法人資料來源：{flow_source}。")
@@ -89,24 +111,23 @@ class AnalysisService:
             score_breakdown=score_breakdown,
             technical=technical,
             institutional=institutional,
+            margin=margin,
             sentiment=sentiment,
             stop_loss=stop_loss,
             trailing=trailing,
             risk_lights=risk["lights"],
             reasons=reasons,
             risks=risks,
-            data_sources={
-                "price": price_source,
-                "institutional": flow_source,
-                "fundamental": fundamental_source,
-                "news": news_source,
-            },
+            data_sources=data_sources,
         )
 
         return {
             "symbol": symbol,
             "name": stock_name,
-            "analysis_date": date.today(),
+            "analysis_date": taipei_today(),
+            "generated_at": taipei_now(),
+            "refresh": risk["refresh"],
+            "data_sources": data_sources,
             "raw_score": round(raw_score, 2),
             "adjusted_score": round(adjusted_score, 2),
             "recommendation": recommendation_from_score(adjusted_score),
@@ -114,12 +135,14 @@ class AnalysisService:
             "risks": risks or ["目前未偵測到重大單一風險，但仍需遵守停損。"],
             "technical": technical,
             "institutional": institutional,
+            "margin": margin,
             "fundamental": {**fundamentals, "signals": fund_reasons[:4]},
             "sentiment": sentiment,
             "stop_loss": stop_loss,
             "trailing_take_profit": trailing,
             "risk_lights": risk["lights"],
             "decision_plan": decision_plan,
+            "strategy_judgement": strategy_judgement,
         }
 
     async def chart(self, symbol: str, range_name: str = "1y") -> dict:
@@ -268,6 +291,7 @@ def _decision_plan(
     score_breakdown: dict[str, float],
     technical: dict,
     institutional: dict,
+    margin: dict,
     sentiment: dict,
     stop_loss: dict,
     trailing: dict,
@@ -288,6 +312,8 @@ def _decision_plan(
     risk_reward = _float_or_none(trailing.get("risk_reward_ratio"))
     flow_5d = _float_or_none(institutional.get("five_day_total")) or 0.0
     flow_20d = _float_or_none(institutional.get("twenty_day_total")) or 0.0
+    margin_5d = _float_or_none(margin.get("five_day_change")) or 0.0
+    margin_20d = _float_or_none(margin.get("twenty_day_change")) or 0.0
 
     bias = _decision_bias(adjusted_score, composite_light, trend)
     confidence = _decision_confidence(adjusted_score, composite_light, trend, data_sources, reasons, risks)
@@ -306,11 +332,13 @@ def _decision_plan(
             f"大盤綜合燈號不是紅燈，目前為 {_light_label(composite_light)}。",
             _price_condition("收盤價守在 MA20 上方", close, ma20),
             "近 5 日或 20 日法人合計轉為買超。",
+            _margin_condition("融資 5 日與 20 日同步下降", margin_5d, margin_20d),
             _risk_reward_condition(risk_reward),
         ],
         "不進場條件": [
             "Market Risk Engine 或綜合燈號轉紅。",
             _break_condition("收盤價跌破 MA60", close, ma60),
+            _margin_risk_condition("融資連續增加", margin_5d, margin_20d),
             "RSI14 高於 75 且沒有回測支撐，不追價。",
             "新聞或基本面資料仍是 sample fallback 時，不把結論當成完整事實。",
         ],
@@ -360,6 +388,7 @@ def _decision_plan(
     data_quality = [
         f"價格資料來源：{data_sources.get('price', 'unknown')}",
         f"法人資料來源：{data_sources.get('institutional', 'unknown')}",
+        f"融資資料來源：{data_sources.get('margin', 'unknown')}",
         f"基本面資料來源：{data_sources.get('fundamental', 'unknown')}",
         f"新聞資料來源：{data_sources.get('news', 'unknown')}",
     ]
@@ -389,6 +418,7 @@ def _decision_plan(
             risk_lights=risk_lights,
             stop_loss=stop_loss,
             trailing=trailing,
+            margin=margin,
             reasons=reasons,
             risks=risks,
             data_quality=data_quality,
@@ -441,6 +471,145 @@ def _research_position_size(adjusted_score: float, composite_light: str, confide
     return "25-40%，仍需分批，並先設定停損。"
 
 
+def _strategy_judgement(
+    *,
+    adjusted_score: float,
+    technical: dict,
+    institutional: dict,
+    margin: dict,
+    risk_lights: dict,
+) -> dict:
+    composite_light = risk_lights.get("composite", "yellow")
+    close = _float_or_none(technical.get("latest_close"))
+    ma20 = _float_or_none(technical.get("ma", {}).get("ma20"))
+    ma60 = _float_or_none(technical.get("ma", {}).get("ma60"))
+    rsi14 = _float_or_none(technical.get("rsi", {}).get("rsi14"))
+    osc = _float_or_none(technical.get("macd", {}).get("osc"))
+    volume_ratio = _float_or_none(technical.get("volume_ratio"))
+    flow_5d = _float_or_none(institutional.get("five_day_total")) or 0.0
+    flow_20d = _float_or_none(institutional.get("twenty_day_total")) or 0.0
+    margin_5d = _float_or_none(margin.get("five_day_change")) or 0.0
+    margin_20d = _float_or_none(margin.get("twenty_day_change")) or 0.0
+
+    market_pass = composite_light != "red"
+    price_holds_ma20 = close is not None and ma20 is not None and close >= ma20
+    price_holds_ma60 = close is not None and ma60 is not None and close >= ma60
+    institutions_buying = flow_5d > 0 or flow_20d > 0
+    margin_improving = margin_5d < 0 or margin_20d < 0
+    margin_clean = margin_5d < 0 and margin_20d < 0
+    overheat = bool(rsi14 is not None and rsi14 >= 75) or bool(volume_ratio is not None and volume_ratio >= 2.5)
+
+    timing_score = adjusted_score
+    timing_score += 5 if market_pass else -12
+    timing_score += 5 if price_holds_ma20 else -8
+    timing_score += 4 if price_holds_ma60 else -10
+    timing_score += 4 if institutions_buying else -3
+    timing_score += 6 if margin_clean else 3 if margin_improving else -4
+    timing_score += 2 if osc is not None and osc > 0 else 0
+    timing_score -= 8 if overheat else 0
+    timing_score = round(max(0, min(100, timing_score)), 2)
+
+    if not market_pass or adjusted_score < 40 or not price_holds_ma60:
+        stance = "reduce_risk"
+        headline = "先守風險，不急著進場"
+        action = "大盤或中期趨勢還沒站穩，先保留現金，等重新站回 MA60 且風險燈號改善。"
+    elif timing_score >= 75 and price_holds_ma20 and institutions_buying and margin_improving and not overheat:
+        stance = "prepare_entry"
+        headline = "接近可研究進場"
+        action = "條件已接近進場區，適合用小部位分批驗證，並把 MA20/MA60 當成失效線。"
+    elif timing_score >= 60 and price_holds_ma20:
+        stance = "hold_steady"
+        headline = "可以守穩觀察"
+        action = "價格仍守在短線支撐上，先持有或觀察，不追高，等籌碼或量價再確認。"
+    else:
+        stance = "wait"
+        headline = "等待更乾淨的訊號"
+        action = "目前還不是乾淨進場點，等融資下降、法人轉買或收盤重新站穩 MA20。"
+
+    checks = [
+        _strategy_check("大盤風險", "pass" if market_pass else "fail", f"綜合燈號為 {_light_label(composite_light)}。"),
+        _strategy_check(
+            "守穩 MA20",
+            _pass_watch_fail(price_holds_ma20, close is not None and ma20 is not None),
+            _price_condition("收盤價守在 MA20 上方", close, ma20),
+        ),
+        _strategy_check(
+            "守穩 MA60",
+            _pass_watch_fail(price_holds_ma60, close is not None and ma60 is not None),
+            _price_condition("收盤價守在 MA60 上方", close, ma60),
+        ),
+        _strategy_check(
+            "法人籌碼",
+            "pass" if institutions_buying else "watch",
+            f"法人 5 日 {_fmt(flow_5d, 0)}，20 日 {_fmt(flow_20d, 0)}。",
+        ),
+        _strategy_check(
+            "融資下降",
+            "pass" if margin_clean else "watch" if margin_improving else "fail",
+            f"融資 5 日 {_fmt(margin_5d, 0)}，20 日 {_fmt(margin_20d, 0)}。",
+        ),
+        _strategy_check(
+            "避免過熱",
+            "fail" if overheat else "pass",
+            f"RSI14 {_fmt(rsi14)}，量比 {_fmt(volume_ratio)}。",
+        ),
+    ]
+
+    return {
+        "stance": stance,
+        "headline": headline,
+        "action": action,
+        "timing_score": timing_score,
+        "chip_cleanliness": _chip_cleanliness(institutions_buying, margin_clean, margin_improving),
+        "margin_trend": _margin_trend_label(margin_5d, margin_20d),
+        "market_guard": "大盤風險可控" if market_pass else "大盤風險偏高，先降低進場慾望",
+        "checks": checks,
+        "entry_triggers": [
+            "收盤價守住 MA20，且隔日不爆量跌破。",
+            "法人 5 日或 20 日合計維持買超。",
+            "融資餘額連續下降或至少不再增加。",
+            "大盤綜合燈號維持黃燈以上。",
+        ],
+        "defensive_triggers": [
+            "跌破 MA60 或 Market Risk Engine 轉紅。",
+            "融資連續增加但股價不漲，代表籌碼變重。",
+            "RSI 過熱後爆量長黑，避免追價。",
+        ],
+    }
+
+
+def _strategy_check(label: str, status: str, detail: str) -> dict:
+    return {"label": label, "status": status, "detail": detail}
+
+
+def _pass_watch_fail(condition: bool, has_data: bool) -> str:
+    if condition:
+        return "pass"
+    if has_data:
+        return "fail"
+    return "watch"
+
+
+def _chip_cleanliness(institutions_buying: bool, margin_clean: bool, margin_improving: bool) -> str:
+    if institutions_buying and margin_clean:
+        return "籌碼乾淨度佳：法人偏買，融資同步下降。"
+    if margin_clean or margin_improving:
+        return "籌碼正在轉乾淨：融資下降，但仍需法人或價格確認。"
+    if institutions_buying:
+        return "法人支撐仍在，但融資尚未明顯下降。"
+    return "籌碼仍偏重，先等融資或法人訊號改善。"
+
+
+def _margin_trend_label(five_day_change: float, twenty_day_change: float) -> str:
+    if five_day_change < 0 and twenty_day_change < 0:
+        return f"融資 5 日減少 {abs(five_day_change):,.0f}，20 日減少 {abs(twenty_day_change):,.0f}。"
+    if five_day_change < 0 or twenty_day_change < 0:
+        return f"融資部分改善：5 日 {_fmt(five_day_change, 0)}，20 日 {_fmt(twenty_day_change, 0)}。"
+    if five_day_change > 0 and twenty_day_change > 0:
+        return f"融資增加：5 日 +{_fmt(five_day_change, 0)}，20 日 +{_fmt(twenty_day_change, 0)}。"
+    return "融資變化中性，還沒有明顯下降訊號。"
+
+
 def _ai_snapshot_prompt(
     *,
     symbol: str,
@@ -454,6 +623,7 @@ def _ai_snapshot_prompt(
     risk_lights: dict,
     stop_loss: dict,
     trailing: dict,
+    margin: dict,
     reasons: list[str],
     risks: list[str],
     data_quality: list[str],
@@ -484,6 +654,12 @@ def _ai_snapshot_prompt(
             f"60日 {_fmt(institutional.get('sixty_day_total'), 0)}"
         ),
         (
+            "融資籌碼："
+            f"5日變化 {_fmt(margin.get('five_day_change'), 0)}，"
+            f"20日變化 {_fmt(margin.get('twenty_day_change'), 0)}，"
+            f"券資比 {_fmt(margin.get('short_margin_ratio'))}%"
+        ),
+        (
             "停損停利："
             f"ATR停損 {_fmt(stop_loss.get('atr_stop'))}，"
             f"移動停利 {_fmt(trailing.get('current_take_profit_price'))}"
@@ -502,6 +678,16 @@ def _price_condition(label: str, close: float | None, reference: float | None) -
         return f"{label}，但目前資料不足需重新確認。"
     status = "成立" if close >= reference else "未成立"
     return f"{label}：{status}，收盤 {_fmt(close)}，參考價 {_fmt(reference)}。"
+
+
+def _margin_condition(label: str, five_day_change: float, twenty_day_change: float) -> str:
+    status = "成立" if five_day_change < 0 and twenty_day_change < 0 else "未完全成立"
+    return f"{label}：{status}，5 日 {_fmt(five_day_change, 0)}，20 日 {_fmt(twenty_day_change, 0)}。"
+
+
+def _margin_risk_condition(label: str, five_day_change: float, twenty_day_change: float) -> str:
+    status = "成立" if five_day_change > 0 and twenty_day_change > 0 else "未成立"
+    return f"{label}：{status}，5 日 {_fmt(five_day_change, 0)}，20 日 {_fmt(twenty_day_change, 0)}。"
 
 
 def _break_condition(label: str, close: float | None, reference: float | None) -> str:

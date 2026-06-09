@@ -1,4 +1,5 @@
 from app.schemas.analysis import (
+    AiStockPicksResponse,
     AnalysisResponse,
     BacktestRequest,
     BacktestResponse,
@@ -6,12 +7,16 @@ from app.schemas.analysis import (
     NotificationTestRequest,
     NotificationTestResponse,
     PdfReportResponse,
+    PositionCreate,
+    PositionItem,
+    PositionUpdate,
     RadarResponse,
     WatchlistCreate,
     WatchlistItem,
 )
 
 __all__ = [
+    "AiStockPicksResponse",
     "AnalysisResponse",
     "BacktestRequest",
     "BacktestResponse",
@@ -19,8 +24,10 @@ __all__ = [
     "NotificationTestRequest",
     "NotificationTestResponse",
     "PdfReportResponse",
+    "PositionCreate",
+    "PositionItem",
+    "PositionUpdate",
     "RadarResponse",
     "WatchlistCreate",
     "WatchlistItem",
 ]
-

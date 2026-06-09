@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import timedelta
 
 import numpy as np
 import pandas as pd
+
+from app.services.calendar import taipei_now, taipei_today
 
 STOCK_NAMES = {
     "0050": "元大台灣50",
@@ -13,10 +15,27 @@ STOCK_NAMES = {
     "2317": "鴻海",
     "2454": "聯發科",
     "2308": "台達電",
+    "2382": "廣達",
     "2412": "中華電",
+    "3711": "日月光投控",
     "2603": "長榮",
+    "2609": "陽明",
+    "2615": "萬海",
     "2881": "富邦金",
+    "2882": "國泰金",
+    "2891": "中信金",
     "3008": "大立光",
+    "3034": "聯詠",
+    "3443": "創意",
+    "3661": "世芯-KY",
+    "2357": "華碩",
+    "2379": "瑞昱",
+    "3231": "緯創",
+    "5871": "中租-KY",
+    "1216": "統一",
+    "1303": "南亞",
+    "2002": "中鋼",
+    "1101": "台泥",
 }
 
 
@@ -31,7 +50,7 @@ def stock_name(symbol: str) -> str | None:
 def make_price_history(symbol: str, years: int = 2) -> pd.DataFrame:
     rng = np.random.default_rng(_seed(symbol))
     periods = max(260 * years, 260)
-    dates = pd.bdate_range(end=date.today(), periods=periods)
+    dates = pd.bdate_range(end=taipei_today(), periods=periods)
     drift = 0.00045 if symbol in {"2330", "2454", "2317"} else 0.0002
     volatility = 0.018 + (_seed(symbol) % 9) / 1000
     returns = rng.normal(drift, volatility, len(dates))
@@ -60,7 +79,7 @@ def make_price_history(symbol: str, years: int = 2) -> pd.DataFrame:
 
 def make_institutional_flows(symbol: str, days: int = 80) -> pd.DataFrame:
     rng = np.random.default_rng(_seed(symbol) + 41)
-    dates = pd.bdate_range(end=date.today(), periods=days)
+    dates = pd.bdate_range(end=taipei_today(), periods=days)
     bias = 350 if symbol in {"2330", "2454", "2317"} else 80
     foreign = rng.normal(bias, 900, len(dates)).round(0)
     trust = rng.normal(bias / 4, 300, len(dates)).round(0)
@@ -96,7 +115,7 @@ def make_fundamental(symbol: str) -> dict[str, float | None]:
 
 def make_margin(symbol: str, days: int = 80) -> pd.DataFrame:
     rng = np.random.default_rng(_seed(symbol) + 88)
-    dates = pd.bdate_range(end=date.today(), periods=days)
+    dates = pd.bdate_range(end=taipei_today(), periods=days)
     margin = rng.normal(20000, 1800, len(dates)).clip(1000)
     short = rng.normal(900, 160, len(dates)).clip(0)
     ratio = np.where(margin == 0, 0, short / margin * 100)
@@ -119,7 +138,7 @@ def make_shareholding(symbol: str) -> dict[str, float | int | None]:
 
 
 def make_news(symbol: str) -> list[dict[str, str]]:
-    today = datetime.now(UTC)
+    today = taipei_now()
     return [
         {
             "published_at": (today - timedelta(days=1)).isoformat(),

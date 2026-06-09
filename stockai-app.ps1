@@ -1,9 +1,12 @@
 $ErrorActionPreference = "Stop"
 
-$ProjectDir = "C:\stockai"
-$ProjectName = "stockai"
+$OriginalProjectDir = $PSScriptRoot
+$ProjectDir = $OriginalProjectDir
+$ProjectName = "tw-stock-ai-assistant"
 $Url = "http://localhost:3000"
-$LogPath = Join-Path $ProjectDir "stockai-app.log"
+$LogPath = Join-Path $OriginalProjectDir "stockai-app.log"
+$SubstDrive = $null
+$StartedCompose = $false
 
 function Write-Log {
   param([string]$Message)
@@ -18,6 +21,60 @@ function Show-Message {
     $shell.Popup($Message, 0, "StockAI", 48) | Out-Null
   } catch {
     Write-Log $Message
+  }
+}
+
+function Test-AsciiPath {
+  param([string]$Path)
+  foreach ($char in $Path.ToCharArray()) {
+    $code = [int][char]$char
+    if ($code -lt 32 -or $code -gt 126) {
+      return $false
+    }
+  }
+  return $true
+}
+
+function Get-FreeSubstDrive {
+  $used = Get-PSDrive -PSProvider FileSystem | Select-Object -ExpandProperty Name
+  foreach ($letter in @("S", "T", "U", "V", "W", "X", "Y", "Z", "R", "Q", "P")) {
+    if ($used -notcontains $letter) {
+      return "${letter}:"
+    }
+  }
+  return $null
+}
+
+function Enable-AsciiProjectPath {
+  param([string]$Path)
+  if (Test-AsciiPath $Path) {
+    return $Path
+  }
+
+  $drive = Get-FreeSubstDrive
+  if (-not $drive) {
+    throw "No free drive letter is available for Docker's ASCII-path build workaround."
+  }
+
+  Write-Log "Project path contains non-ASCII characters. Mapping $drive to $Path for Docker build."
+  & subst $drive $Path
+  if ($LASTEXITCODE -ne 0) {
+    throw "Failed to map $drive to $Path."
+  }
+
+  $script:SubstDrive = $drive
+  return "$drive\"
+}
+
+function Disable-AsciiProjectPath {
+  if ($script:SubstDrive) {
+    try {
+      Set-Location $OriginalProjectDir
+      & subst $script:SubstDrive /D
+      Write-Log "Removed temporary drive mapping $script:SubstDrive."
+    } catch {
+      Write-Log "Failed to remove temporary drive mapping $script:SubstDrive. $($_.Exception.Message)"
+    }
   }
 }
 
@@ -62,29 +119,40 @@ function Find-Edge {
 }
 
 try {
+  $ProjectDir = Enable-AsciiProjectPath $OriginalProjectDir
   Set-Location $ProjectDir
   Write-Log "Starting StockAI app launcher."
 
-  $dockerDesktop = "$env:ProgramFiles\Docker\Docker\Docker Desktop.exe"
-  if (Test-Path $dockerDesktop) {
-    Start-Process -FilePath $dockerDesktop | Out-Null
-  }
+  if (Wait-Web -Seconds 4) {
+    Write-Log "StockAI web is already ready. Skipping Docker Compose startup."
+  } else {
+    $dockerDesktop = "$env:ProgramFiles\Docker\Docker\Docker Desktop.exe"
+    if (Test-Path $dockerDesktop) {
+      Start-Process -FilePath $dockerDesktop -WindowStyle Hidden | Out-Null
+    }
 
-  if (-not (Wait-Docker -Seconds 120)) {
-    Show-Message "Docker Desktop is not ready. Please open Docker Desktop and try again."
-    exit 1
-  }
+    if (-not (Wait-Docker -Seconds 120)) {
+      Show-Message "Docker Desktop is not ready. Please open Docker Desktop and try again."
+      exit 1
+    }
 
-  Write-Log "Starting Docker Compose services."
-  docker compose -p $ProjectName up -d | Out-File -FilePath $LogPath -Append -Encoding utf8
-  if ($LASTEXITCODE -ne 0) {
-    Show-Message "Failed to start StockAI. Please send stockai-app.log to the developer."
-    exit 1
-  }
+    Write-Log "Starting Docker Compose services."
+    docker compose -p $ProjectName up -d --build 2>&1 | Tee-Object -FilePath $LogPath -Append | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+      if (Wait-Web -Seconds 4) {
+        Write-Log "Docker Compose startup failed, but StockAI web is already ready. Continuing."
+      } else {
+        Show-Message "Failed to start StockAI. Please send stockai-app.log to the developer."
+        exit 1
+      }
+    } else {
+      $StartedCompose = $true
+    }
 
-  if (-not (Wait-Web -Seconds 90)) {
-    Show-Message "StockAI web page did not become ready. Please send stockai-app.log to the developer."
-    exit 1
+    if (-not (Wait-Web -Seconds 90)) {
+      Show-Message "StockAI web page did not become ready. Please send stockai-app.log to the developer."
+      exit 1
+    }
   }
 
   $edge = Find-Edge
@@ -105,12 +173,17 @@ try {
   $process = Start-Process -FilePath $edge -ArgumentList $arguments -PassThru
   Wait-Process -Id $process.Id
 
-  Write-Log "App window closed. Stopping Docker Compose services."
-  docker compose -p $ProjectName down | Out-File -FilePath $LogPath -Append -Encoding utf8
+  if ($StartedCompose) {
+    Write-Log "App window closed. Stopping Docker Compose services."
+    docker compose -p $ProjectName down 2>&1 | Tee-Object -FilePath $LogPath -Append | Out-Host
+  } else {
+    Write-Log "App window closed. Existing Docker Compose services were left running."
+  }
   Write-Log "StockAI stopped."
 } catch {
   Write-Log $_.Exception.Message
   Show-Message "StockAI failed. Please send stockai-app.log to the developer."
   exit 1
+} finally {
+  Disable-AsciiProjectPath
 }
-

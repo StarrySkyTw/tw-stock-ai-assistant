@@ -7,14 +7,14 @@ export function MetricGrid({ analysis }: { analysis: AnalysisResponse }) {
   const trailing = analysis.trailing_take_profit;
 
   const items = [
-    ["收盤價", formatNumber(technical.latest_close)],
+    ["最新價", formatNumber(technical.latest_close)],
     ["MA20", formatNumber(technical.ma.ma20)],
     ["RSI14", formatNumber(technical.rsi.rsi14)],
     ["ATR14", formatNumber(technical.atr14)],
-    ["停利價", formatNumber(trailing.current_take_profit_price)],
-    ["ATR停損", formatNumber(stop.atr_stop)],
-    ["5日法人", formatNumber(analysis.institutional.five_day_total, 0)],
-    ["20日法人", formatNumber(analysis.institutional.twenty_day_total, 0)]
+    ["移動停利", formatNumber(trailing.current_take_profit_price)],
+    ["ATR 停損", formatNumber(stop.atr_stop)],
+    ["法人 5 日", formatNumber(analysis.institutional.five_day_total, 0)],
+    ["法人 20 日", formatNumber(analysis.institutional.twenty_day_total, 0)]
   ];
 
   return (
@@ -28,4 +28,3 @@ export function MetricGrid({ analysis }: { analysis: AnalysisResponse }) {
     </section>
   );
 }
-

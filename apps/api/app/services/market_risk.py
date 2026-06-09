@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 import numpy as np
 
+from app.services.calendar import market_refresh_clock, taipei_now, taipei_today
 from app.services.sample_data import make_price_history
 
 
@@ -73,7 +72,9 @@ class MarketRiskEngine:
             "lights": lights,
             "indicators": indicators,
             "reasons": reasons,
-            "generated_at": datetime.now(UTC),
+            "generated_at": taipei_now(),
+            "market_date": taipei_today(),
+            "refresh": market_refresh_clock(),
         }
 
     async def _load_indicators(self) -> dict[str, float | None]:

@@ -94,12 +94,124 @@ def summarize_institutional(flows: pd.DataFrame) -> dict:
     }
 
 
+def summarize_margin(margin: pd.DataFrame) -> dict:
+    margin = margin.sort_values("date")
+    latest = margin.tail(1)
+
+    if latest.empty:
+        return {
+            "latest_balance": None,
+            "five_day_change": 0.0,
+            "five_day_change_pct": None,
+            "twenty_day_change": 0.0,
+            "twenty_day_change_pct": None,
+            "short_margin_ratio": None,
+            "status": "unknown",
+            "signals": ["融資資料不足，籌碼乾淨度需要用法人與技術面交叉確認。"],
+        }
+
+    latest_row = latest.iloc[-1]
+    latest_balance = _to_float(latest_row.get("margin_purchase_balance"))
+    short_margin_ratio = _to_float(latest_row.get("short_margin_ratio"))
+    five_day_change, five_day_pct = _balance_change(margin, latest_balance, 6)
+    twenty_day_change, twenty_day_pct = _balance_change(margin, latest_balance, 21)
+
+    signals: list[str] = []
+    if five_day_change < 0:
+        signals.append(f"近 5 日融資減少 {abs(five_day_change):,.0f}，短線浮額有下降。")
+    elif five_day_change > 0:
+        signals.append(f"近 5 日融資增加 {five_day_change:,.0f}，追價籌碼仍需留意。")
+
+    if twenty_day_change < 0:
+        signals.append(f"近 20 日融資減少 {abs(twenty_day_change):,.0f}，籌碼有整理跡象。")
+    elif twenty_day_change > 0:
+        signals.append(f"近 20 日融資增加 {twenty_day_change:,.0f}，籌碼尚未完全沉澱。")
+
+    if short_margin_ratio is not None:
+        if short_margin_ratio <= 5:
+            signals.append(f"券資比 {short_margin_ratio:.1f}% 偏低，融券壓力不高。")
+        elif short_margin_ratio >= 15:
+            signals.append(f"券資比 {short_margin_ratio:.1f}% 偏高，籌碼波動風險較高。")
+
+    if not signals:
+        signals.append("融資變化中性，暫無明顯籌碼轉乾淨或過熱訊號。")
+
+    status = "neutral"
+    if five_day_change < 0 and twenty_day_change < 0:
+        status = "cleaning"
+    elif five_day_change > 0 and twenty_day_change > 0:
+        status = "crowded"
+    elif five_day_change < 0:
+        status = "improving"
+
+    return {
+        "latest_balance": latest_balance,
+        "five_day_change": round(five_day_change, 2),
+        "five_day_change_pct": five_day_pct,
+        "twenty_day_change": round(twenty_day_change, 2),
+        "twenty_day_change_pct": twenty_day_pct,
+        "short_margin_ratio": short_margin_ratio,
+        "status": status,
+        "signals": signals,
+    }
+
+
+def score_margin(summary: dict) -> tuple[float, list[str], list[str]]:
+    adjustment = 0.0
+    reasons: list[str] = []
+    risks: list[str] = []
+    five_day_change = summary.get("five_day_change", 0) or 0
+    twenty_day_change = summary.get("twenty_day_change", 0) or 0
+    short_margin_ratio = summary.get("short_margin_ratio")
+
+    if five_day_change < 0:
+        adjustment += 2
+        reasons.append("近 5 日融資餘額下降，短線籌碼比較乾淨。")
+    elif five_day_change > 0:
+        adjustment -= 2
+        risks.append("近 5 日融資餘額增加，追價籌碼還沒完全洗掉。")
+
+    if twenty_day_change < 0:
+        adjustment += 3
+        reasons.append("近 20 日融資同步下降，籌碼沉澱加分。")
+    elif twenty_day_change > 0:
+        adjustment -= 3
+        risks.append("近 20 日融資仍增加，進場前要等籌碼更乾淨。")
+
+    if short_margin_ratio is not None and short_margin_ratio >= 15:
+        adjustment -= 1
+        risks.append("券資比偏高，籌碼波動可能放大。")
+
+    return max(-6, min(6, adjustment)), reasons, risks
+
+
 def _trend(short: float, medium: float) -> str:
     if short > 0 and medium > 0:
         return "accumulating"
     if short < 0 and medium < 0:
         return "distributing"
     return "mixed"
+
+
+def _balance_change(margin: pd.DataFrame, latest_balance: float | None, lookback_rows: int) -> tuple[float, float | None]:
+    if latest_balance is None or len(margin) < 2:
+        return 0.0, None
+    base_index = max(0, len(margin) - lookback_rows)
+    base_balance = _to_float(margin.iloc[base_index].get("margin_purchase_balance"))
+    if base_balance is None:
+        return 0.0, None
+    change = latest_balance - base_balance
+    change_pct = round(change / base_balance * 100, 2) if base_balance else None
+    return change, change_pct
+
+
+def _to_float(value: object) -> float | None:
+    if value is None or pd.isna(value):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def score_institutional(summary: dict, large_holder_ratio: float | None = None) -> tuple[float, list[str], list[str]]:
@@ -173,4 +285,3 @@ def score_sentiment(sentiment: dict) -> tuple[float, list[str], list[str]]:
     if score <= 3:
         return score, [], ["新聞與重大資訊情緒偏負向。"]
     return score, ["新聞情緒中性。"], []
-

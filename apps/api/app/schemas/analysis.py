@@ -4,6 +4,20 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 Light = Literal["green", "yellow", "red"]
+MarketPhase = Literal["pre_open", "regular", "post_close", "closed"]
+
+
+class MarketRefreshInfo(BaseModel):
+    now: datetime
+    timezone: str
+    market_phase: MarketPhase
+    label: str
+    is_trading_day: bool
+    is_regular_session: bool
+    is_live_refresh: bool
+    refresh_interval_seconds: int
+    next_refresh_at: datetime
+    message: str
 
 
 class TechnicalSummary(BaseModel):
@@ -25,6 +39,17 @@ class InstitutionalSummary(BaseModel):
     foreign_trend: str
     investment_trust_trend: str
     dealer_trend: str
+    signals: list[str]
+
+
+class MarginSummary(BaseModel):
+    latest_balance: float | None
+    five_day_change: float
+    five_day_change_pct: float | None
+    twenty_day_change: float
+    twenty_day_change_pct: float | None
+    short_margin_ratio: float | None
+    status: str
     signals: list[str]
 
 
@@ -56,6 +81,25 @@ class StopLossSummary(BaseModel):
     ma20_stop_triggered: bool
     ma60_stop_triggered: bool
     notes: list[str]
+
+
+class StrategyCheck(BaseModel):
+    label: str
+    status: Literal["pass", "watch", "fail"]
+    detail: str
+
+
+class StrategyJudgement(BaseModel):
+    stance: Literal["prepare_entry", "hold_steady", "wait", "reduce_risk"]
+    headline: str
+    action: str
+    timing_score: float
+    chip_cleanliness: str
+    margin_trend: str
+    market_guard: str
+    checks: list[StrategyCheck]
+    entry_triggers: list[str]
+    defensive_triggers: list[str]
 
 
 class TrailingTakeProfitSummary(BaseModel):
@@ -104,6 +148,8 @@ class MarketRiskResponse(BaseModel):
     indicators: dict[str, float | None]
     reasons: list[str]
     generated_at: datetime
+    market_date: date
+    refresh: MarketRefreshInfo
 
 
 class MarketOverviewResponse(BaseModel):
@@ -114,10 +160,62 @@ class MarketOverviewResponse(BaseModel):
     risk: MarketRiskResponse
 
 
+class AiPickFactor(BaseModel):
+    kind: str
+    label: str
+    detail: str
+    tone: Literal["positive", "neutral", "risk"] = "positive"
+
+
+class AiMarketSnapshot(BaseModel):
+    status: str
+    score: float
+    light: Light
+    reasons: list[str]
+    indicators: dict[str, float | None]
+    generated_at: datetime
+    market_date: date
+    refresh: MarketRefreshInfo
+
+
+class AiStockPick(BaseModel):
+    rank: int
+    symbol: str
+    name: str | None = None
+    industry: str
+    latest_close: float
+    recommendation: str
+    selection_score: float
+    adjusted_score: float
+    bias: Literal["bullish", "neutral", "bearish"]
+    confidence: Literal["高", "中", "低"]
+    strategy_judgement: StrategyJudgement
+    thesis: str
+    bullish_factors: list[AiPickFactor]
+    risk_factors: list[AiPickFactor]
+    score_breakdown: dict[str, float]
+    data_quality: list[str]
+    source_notes: list[str]
+
+
+class AiStockPicksResponse(BaseModel):
+    generated_at: datetime
+    universe: list[str]
+    refresh: MarketRefreshInfo
+    market_snapshot: AiMarketSnapshot
+    top_picks: list[AiStockPick]
+    selection_logic: list[str]
+    watch_notes: list[str]
+    disclaimer: str = "AI 盤勢選股僅供研究與篩選，不構成投資建議、保證獲利或下單指令。"
+
+
 class AnalysisResponse(BaseModel):
     symbol: str
     name: str | None = None
     analysis_date: date
+    generated_at: datetime
+    refresh: MarketRefreshInfo
+    data_sources: dict[str, str]
     raw_score: float
     adjusted_score: float
     recommendation: str
@@ -125,12 +223,14 @@ class AnalysisResponse(BaseModel):
     risks: list[str]
     technical: TechnicalSummary
     institutional: InstitutionalSummary
+    margin: MarginSummary
     fundamental: FundamentalSummary
     sentiment: SentimentSummary
     stop_loss: StopLossSummary
     trailing_take_profit: TrailingTakeProfitSummary
     risk_lights: RiskLights
     decision_plan: DecisionPlan
+    strategy_judgement: StrategyJudgement
     disclaimer: str = "本系統僅供研究與紀律化決策輔助，不構成投資建議或下單指令。"
 
 
@@ -185,6 +285,35 @@ class WatchlistItem(WatchlistCreate):
 
     id: int
     created_at: datetime
+
+
+class PositionCreate(BaseModel):
+    symbol: str = Field(min_length=1, max_length=16)
+    entry_price: float = Field(gt=0)
+    quantity: float = Field(default=0, ge=0)
+    highest_price: float | None = Field(default=None, gt=0)
+    entry_date: date | None = None
+
+
+class PositionUpdate(BaseModel):
+    entry_price: float | None = Field(default=None, gt=0)
+    quantity: float | None = Field(default=None, ge=0)
+    highest_price: float | None = Field(default=None, gt=0)
+    entry_date: date | None = None
+    status: Literal["open", "closed"] | None = None
+
+
+class PositionItem(BaseModel):
+    id: int
+    symbol: str
+    name: str | None = None
+    entry_date: date | None = None
+    entry_price: float
+    quantity: float
+    highest_price: float | None = None
+    status: str
+    created_at: datetime
+    updated_at: datetime
 
 
 class PdfReportResponse(BaseModel):

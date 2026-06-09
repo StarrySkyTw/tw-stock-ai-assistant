@@ -47,11 +47,11 @@ export function ChartPanel({ chart, theme }: { chart: ChartResponse | null; them
   }
 
   return (
-    <section className="chart-shell rounded-md border border-line bg-panel p-3">
+    <section className="chart-shell min-w-0 rounded-md border border-line bg-panel p-3">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h2 className="text-base font-semibold">互動圖表</h2>
-          <p className="text-xs text-muted">K 線固定顯示；其他指標可自行開關，下方時間軸可以拖拉。</p>
+          <h2 className="text-base font-semibold">價格圖表</h2>
+          <p className="text-xs text-muted">K 線、均線、成交量與常用技術指標。</p>
         </div>
         <div className="flex flex-wrap gap-2">
           {controls.map((item) => {
@@ -67,7 +67,7 @@ export function ChartPanel({ chart, theme }: { chart: ChartResponse | null; them
                 type="button"
                 onClick={() => setVisible((current) => ({ ...current, [item.key]: !current[item.key] }))}
               >
-                {active ? "✓ " : ""}{item.label}
+                {item.label}
               </button>
             );
           })}
@@ -107,7 +107,7 @@ export function ChartPanel({ chart, theme }: { chart: ChartResponse | null; them
           displaylogo: false,
           modeBarButtonsToRemove: ["select2d", "lasso2d", "autoScale2d"]
         }}
-        className="h-[980px] w-full"
+        className="h-[820px] w-full"
         useResizeHandler
       />
     </section>
@@ -120,7 +120,7 @@ function shouldShowTrace(trace: Plotly.Data, visible: Record<TraceGroup, boolean
   if (name === "MA5") return visible.ma5;
   if (name === "MA20") return visible.ma20;
   if (name === "MA60") return visible.ma60;
-  if (name.includes("成交") || name === "VOLUME") return visible.volume;
+  if (name.includes("成交量") || name === "VOLUME") return visible.volume;
   if (["DIF", "MACD", "OSC"].includes(name)) return visible.macd;
   if (name.includes("RSI")) return visible.rsi;
   return true;

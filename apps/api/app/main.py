@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import models  # noqa: F401
-from app.api.routes import analysis, backtests, jobs, market, notifications, radar, reports, watchlist
+from app.api.routes import analysis, backtests, jobs, market, notifications, positions, radar, reports, watchlist
 from app.core.config import get_settings
 from app.core.database import Base, engine
 
@@ -34,11 +34,20 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    @app.middleware("http")
+    async def no_cache_api_responses(request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith(settings.api_prefix):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+        return response
+
     app.include_router(analysis.router, prefix=settings.api_prefix)
     app.include_router(market.router, prefix=settings.api_prefix)
     app.include_router(backtests.router, prefix=settings.api_prefix)
     app.include_router(radar.router, prefix=settings.api_prefix)
     app.include_router(reports.router, prefix=settings.api_prefix)
+    app.include_router(positions.router, prefix=settings.api_prefix)
     app.include_router(watchlist.router, prefix=settings.api_prefix)
     app.include_router(notifications.router, prefix=settings.api_prefix)
     app.include_router(jobs.router, prefix=settings.api_prefix)

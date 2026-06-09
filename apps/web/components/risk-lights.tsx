@@ -9,10 +9,10 @@ const colorClass = {
 export function RiskLightBadges({ lights }: { lights: RiskLights }) {
   const items = [
     ["大盤趨勢", lights.market_trend],
-    ["法人動向", lights.institutional_flow],
+    ["法人籌碼", lights.institutional_flow],
     ["技術面", lights.technical],
-    ["風險指標", lights.risk_indicator],
-    ["綜合評價", lights.composite]
+    ["風險", lights.risk_indicator],
+    ["綜合", lights.composite]
   ] as const;
 
   return (
@@ -20,12 +20,15 @@ export function RiskLightBadges({ lights }: { lights: RiskLights }) {
       {items.map(([label, light]) => (
         <div key={label} className={`rounded-md border px-3 py-2 ${colorClass[light]}`}>
           <div className="text-xs text-muted">{label}</div>
-          <div className="mt-1 text-lg font-semibold">
-            {light === "green" ? "綠燈" : light === "yellow" ? "黃燈" : "紅燈"}
-          </div>
+          <div className="mt-1 text-lg font-semibold">{lightLabel(light)}</div>
         </div>
       ))}
     </div>
   );
 }
 
+function lightLabel(light: keyof typeof colorClass) {
+  if (light === "green") return "綠燈";
+  if (light === "red") return "紅燈";
+  return "黃燈";
+}

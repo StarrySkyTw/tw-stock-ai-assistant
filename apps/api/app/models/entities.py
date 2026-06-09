@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
@@ -11,10 +11,14 @@ from app.core.database import Base
 JsonType = JSON().with_variant(JSONB, "postgresql")
 
 
+def utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
 class TimestampMixin:
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+        DateTime, default=utc_now, onupdate=utc_now, nullable=False
     )
 
 
@@ -231,4 +235,3 @@ class BacktestRun(Base, TimestampMixin):
     strategy: Mapped[str] = mapped_column(String(64))
     metrics: Mapped[dict[str, Any]] = mapped_column(JsonType)
     trades: Mapped[list[dict[str, Any]]] = mapped_column(JsonType)
-
