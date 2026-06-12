@@ -2,11 +2,13 @@ $ErrorActionPreference = "Stop"
 
 $OriginalProjectDir = $PSScriptRoot
 $ProjectDir = $OriginalProjectDir
-$ProjectName = "tw-stock-ai-assistant"
+$ProjectName = "stockai"
 $Url = "http://localhost:3000"
 $LogPath = Join-Path $OriginalProjectDir "stockai-app.log"
 $SubstDrive = $null
 $StartedCompose = $false
+$LauncherMutex = $null
+$HasLauncherMutex = $false
 
 function Write-Log {
   param([string]$Message)
@@ -119,6 +121,14 @@ function Find-Edge {
 }
 
 try {
+  $LauncherMutex = New-Object System.Threading.Mutex($false, "Local\StockAIAppLauncher")
+  $HasLauncherMutex = $LauncherMutex.WaitOne(1000)
+  if (-not $HasLauncherMutex) {
+    Write-Log "StockAI launcher is already running. Ignoring duplicate launch."
+    Show-Message "StockAI is already starting or running."
+    exit 0
+  }
+
   $ProjectDir = Enable-AsciiProjectPath $OriginalProjectDir
   Set-Location $ProjectDir
   Write-Log "Starting StockAI app launcher."
@@ -139,7 +149,7 @@ try {
   }
 
   Write-Log "Starting Docker Compose services."
-  docker compose -p $ProjectName up -d --build 2>&1 | Tee-Object -FilePath $LogPath -Append | Out-Host
+  docker compose -p $ProjectName up -d --build --remove-orphans 2>&1 | Tee-Object -FilePath $LogPath -Append | Out-Host
   if ($LASTEXITCODE -ne 0) {
     if (Wait-Web -Seconds 4) {
       Write-Log "Docker Compose startup failed, but StockAI web is already ready. Continuing."
@@ -176,15 +186,22 @@ try {
 
   if ($StartedCompose) {
     Write-Log "App window closed. Stopping Docker Compose services."
-    docker compose -p $ProjectName down 2>&1 | Tee-Object -FilePath $LogPath -Append | Out-Host
+    docker compose -p $ProjectName down --remove-orphans 2>&1 | Tee-Object -FilePath $LogPath -Append | Out-Host
   } else {
     Write-Log "App window closed. Existing Docker Compose services were left running."
   }
   Write-Log "StockAI stopped."
 } catch {
-  Write-Log $_.Exception.Message
+  Write-Log "Unhandled launcher error: $($_.Exception.Message)"
+  Write-Log ($_ | Out-String)
   Show-Message "StockAI failed. Please send stockai-app.log to the developer."
   exit 1
 } finally {
   Disable-AsciiProjectPath
+  if ($HasLauncherMutex -and $LauncherMutex) {
+    $LauncherMutex.ReleaseMutex()
+  }
+  if ($LauncherMutex) {
+    $LauncherMutex.Dispose()
+  }
 }
