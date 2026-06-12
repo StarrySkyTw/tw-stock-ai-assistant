@@ -13,11 +13,17 @@ class DailyJobService:
         self,
         symbols: list[str] | None = None,
         positions: list[dict] | None = None,
+        watchlist: list[dict] | None = None,
     ) -> dict:
         symbols = _normalize_symbols(symbols)
         position_map = {
             symbol: item
             for item in positions or []
+            if (symbol := _normalize_symbol(str(item.get("symbol", ""))))
+        }
+        watchlist_map = {
+            symbol: item
+            for item in watchlist or []
             if (symbol := _normalize_symbol(str(item.get("symbol", ""))))
         }
         results = []
@@ -33,17 +39,33 @@ class DailyJobService:
         for item in results:
             lines.append(f"{item['symbol']}: {item['recommendation']} / {item['adjusted_score']} 分")
 
-        position_alerts = [_position_alert(item, position_map[item["symbol"]]) for item in results if item["symbol"] in position_map]
+        position_alerts = [
+            _position_alert(item, position_map[item["symbol"]])
+            for item in results
+            if item["symbol"] in position_map
+        ]
         if position_alerts:
             lines.append("")
             lines.append("持倉風險提醒")
             lines.extend(f"- {alert['summary']}" for alert in position_alerts)
+
+        watchlist_alerts = [
+            alert
+            for item in results
+            if item["symbol"] in watchlist_map
+            if (alert := _watchlist_alert(item, watchlist_map[item["symbol"]])) is not None
+        ]
+        if watchlist_alerts:
+            lines.append("")
+            lines.append("自選到價提醒")
+            lines.extend(f"- {alert['summary']}" for alert in watchlist_alerts)
 
         notify = await self.notifications.send("gmail", "台股 AI 每日盤後摘要", "\n".join(lines))
         return {
             "count": len(results),
             "results": results,
             "position_alerts": position_alerts,
+            "watchlist_alerts": watchlist_alerts,
             "notification": notify.to_dict(),
         }
 
@@ -101,6 +123,56 @@ def _position_alert(analysis: dict, position: dict) -> dict:
         "triggered": triggered,
         "summary": summary,
     }
+
+
+def _watchlist_alert(analysis: dict, item: dict) -> dict | None:
+    close = _float_or_none(analysis.get("technical", {}).get("latest_close"))
+    target_price = _positive_float_or_none(item.get("target_price"))
+    stop_price = _positive_float_or_none(item.get("stop_price"))
+    if close is None or (target_price is None and stop_price is None):
+        return None
+
+    triggered: list[str] = []
+    if target_price is not None and close >= target_price:
+        triggered.append("目標價觸及")
+    if stop_price is not None and close <= stop_price:
+        triggered.append("停損價觸及")
+    if not triggered:
+        return None
+
+    symbol = analysis["symbol"]
+    name = analysis.get("name") or ""
+    status = "、".join(triggered)
+    target_gap = _price_gap_percent(close, target_price)
+    stop_gap = _price_gap_percent(close, stop_price)
+    summary = (
+        f"{symbol} {name}：收盤 {close:.2f}，{status}。"
+        "這是到價提醒，不會自動下單。"
+    )
+    return {
+        "symbol": symbol,
+        "name": analysis.get("name"),
+        "latest_close": close,
+        "target_price": target_price,
+        "stop_price": stop_price,
+        "target_gap_percent": target_gap,
+        "stop_gap_percent": stop_gap,
+        "triggered": triggered,
+        "summary": summary,
+    }
+
+
+def _positive_float_or_none(value: object) -> float | None:
+    numeric = _float_or_none(value)
+    if numeric is None or numeric <= 0:
+        return None
+    return numeric
+
+
+def _price_gap_percent(close: float, reference: float | None) -> float | None:
+    if reference is None:
+        return None
+    return round((close - reference) / reference * 100, 2)
 
 
 def _float_or_none(value: object) -> float | None:

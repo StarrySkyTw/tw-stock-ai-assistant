@@ -259,7 +259,9 @@ def _collect_market_factors(
         bonus -= 8
         risks.append(_factor("market", "盤勢", "大盤綜合燈號偏紅，需降低追價與持倉風險。", "risk"))
     else:
-        positive.append(_factor("market", "盤勢", f"大盤狀態為{market['status']}，適合以條件篩選而非全面追價。", "neutral"))
+        positive.append(
+            _factor("market", "盤勢", f"大盤狀態為{market['status']}，適合以條件篩選而非全面追價。", "neutral")
+        )
 
     sox = _float_or_none(indicators.get("sox_change_5d"))
     nasdaq = _float_or_none(indicators.get("nasdaq_change_5d"))
@@ -327,7 +329,9 @@ def _collect_institutional_factors(
     flow_20d = _float_or_none(institutional.get("twenty_day_total")) or 0.0
     if flow_5d > 0 and flow_20d > 0:
         bonus += 4
-        positive.append(_factor("institutional", "法人", f"三大法人 5 日與 20 日合計偏買超，20 日合計約 {flow_20d:,.0f}。"))
+        positive.append(
+            _factor("institutional", "法人", f"三大法人 5 日與 20 日合計偏買超，20 日合計約 {flow_20d:,.0f}。")
+        )
     elif flow_5d < 0 and flow_20d < 0:
         bonus -= 5
         risks.append(_factor("institutional", "法人", "三大法人短中期同步偏賣超，籌碼面需保守。", "risk"))

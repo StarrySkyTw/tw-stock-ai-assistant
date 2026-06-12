@@ -1,5 +1,5 @@
-from fastapi.testclient import TestClient
 import pandas as pd
+from fastapi.testclient import TestClient
 
 
 def test_normalize_price_frame_flattens_yahoo_multiindex():
@@ -179,3 +179,22 @@ def test_daily_job_includes_open_position_alerts():
     body = response.json()
     assert body["position_alerts"]
     assert any(alert["symbol"] == "2317" for alert in body["position_alerts"])
+
+
+def test_daily_job_includes_watchlist_price_alerts():
+    from app.main import app
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/watchlist",
+            json={"symbol": "2330", "target_price": 1, "stop_price": 0.5},
+        )
+        response = client.post("/api/v1/jobs/daily-after-close")
+
+    assert created.status_code == 200, created.text
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["watchlist_alerts"]
+    alert = next(item for item in body["watchlist_alerts"] if item["symbol"] == "2330")
+    assert "目標價觸及" in alert["triggered"]
+    assert "不會自動下單" in alert["summary"]

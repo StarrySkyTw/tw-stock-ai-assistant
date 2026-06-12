@@ -20,7 +20,6 @@ def taipei_today() -> date:
 
 def market_refresh_clock(now: datetime | None = None) -> dict:
     current = (now or taipei_now()).astimezone(TAIPEI_TZ)
-    today = current.date()
     current_time = current.time()
     is_trading_day = current.weekday() < 5
 

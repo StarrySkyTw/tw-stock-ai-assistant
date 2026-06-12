@@ -306,7 +306,6 @@ def _decision_plan(
     close = _float_or_none(technical.get("latest_close"))
     ma20 = _float_or_none(technical.get("ma", {}).get("ma20"))
     ma60 = _float_or_none(technical.get("ma", {}).get("ma60"))
-    rsi14 = _float_or_none(technical.get("rsi", {}).get("rsi14"))
     atr_stop = _float_or_none(stop_loss.get("atr_stop"))
     take_profit = _float_or_none(trailing.get("current_take_profit_price"))
     risk_reward = _float_or_none(trailing.get("risk_reward_ratio"))

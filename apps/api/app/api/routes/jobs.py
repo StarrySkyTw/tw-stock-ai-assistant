@@ -28,11 +28,22 @@ async def run_daily_after_close(
         }
         for position, instrument in open_positions
     ]
+    watchlist_items = db.query(WatchlistItem).order_by(WatchlistItem.created_at.asc()).all()
+    watchlist_payloads = [
+        {
+            "symbol": item.symbol,
+            "note": item.note,
+            "target_price": item.target_price,
+            "stop_price": item.stop_price,
+        }
+        for item in watchlist_items
+    ]
     if not symbols:
-        watchlist_symbols = [
-            item.symbol
-            for item in db.query(WatchlistItem).order_by(WatchlistItem.created_at.asc()).all()
-        ]
+        watchlist_symbols = [item["symbol"] for item in watchlist_payloads]
         position_symbols = [item["symbol"] for item in position_payloads]
         symbols = [*watchlist_symbols, *position_symbols]
-    return await DailyJobService().run_after_close(symbols, positions=position_payloads)
+    return await DailyJobService().run_after_close(
+        symbols,
+        positions=position_payloads,
+        watchlist=watchlist_payloads,
+    )

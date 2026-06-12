@@ -81,3 +81,5 @@ Base URL: `/api/v1`
 `POST /jobs/daily-after-close`
 
 若 body 沒有提供股票代號清單，會優先使用後端 watchlist 與 open positions；兩者都為空時才使用預設 `2330, 2317, 2454`。若有 open positions，回傳會包含 `position_alerts`，並在通知摘要列出 ATR 停損、移動停利、MA20/MA60 觸發狀態。
+
+若 watchlist item 有設定 `target_price` 或 `stop_price`，daily job 也會回傳 `watchlist_alerts`。這是到價提醒，只進通知摘要，不會自動下單。

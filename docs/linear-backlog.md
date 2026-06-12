@@ -1,6 +1,6 @@
 # Linear Backlog
 
-Linear connector 尚未提供可用 callable tools，因此第一版先以此文件作為 issue 匯入草稿。
+Linear workspace team: `Benson`.
 
 ## MVP
 
@@ -19,4 +19,4 @@ Linear connector 尚未提供可用 callable tools，因此第一版先以此文
 3. 增加美股/ETF provider 與匯率、VIX、SOX 真資料。
 4. 加入個人登入與多使用者通知偏好。
 5. 建立資料品質監控與 provider fallback 儀表板。
-
+6. `BEN-5`：評估 Shioaji Pro 啟發的即時提醒、資料健康與工作區改善；保留「只輔助判斷、不自動下單」邊界。

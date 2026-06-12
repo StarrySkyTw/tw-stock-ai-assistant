@@ -193,7 +193,11 @@ def _trend(short: float, medium: float) -> str:
     return "mixed"
 
 
-def _balance_change(margin: pd.DataFrame, latest_balance: float | None, lookback_rows: int) -> tuple[float, float | None]:
+def _balance_change(
+    margin: pd.DataFrame,
+    latest_balance: float | None,
+    lookback_rows: int,
+) -> tuple[float, float | None]:
     if latest_balance is None or len(margin) < 2:
         return 0.0, None
     base_index = max(0, len(margin) - lookback_rows)

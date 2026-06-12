@@ -58,3 +58,4 @@ powershell -ExecutionPolicy Bypass -File scripts/check.ps1
 - 後端自選清單：`/api/v1/watchlist` 可儲存自選股，前端可同步清單，盤後 job 未指定股票時會優先使用這份清單。
 - 後端持倉清單：`/api/v1/positions` 可儲存買進價、股數與持倉最高價，前端持倉分頁可套用分析。
 - 盤後持倉提醒：`/api/v1/jobs/daily-after-close` 會把 open positions 納入掃描，回傳 `position_alerts` 並在通知摘要列出停損/停利觸發狀態。
+- 自選到價提醒：watchlist 若設定 `target_price` 或 `stop_price`，盤後 job 會回傳 `watchlist_alerts`；此功能只提醒，不會自動下單。
