@@ -123,36 +123,37 @@ try {
   Set-Location $ProjectDir
   Write-Log "Starting StockAI app launcher."
 
-  if (Wait-Web -Seconds 4) {
-    Write-Log "StockAI web is already ready. Skipping Docker Compose startup."
-  } else {
-    $dockerDesktop = "$env:ProgramFiles\Docker\Docker\Docker Desktop.exe"
-    if (Test-Path $dockerDesktop) {
-      Start-Process -FilePath $dockerDesktop -WindowStyle Hidden | Out-Null
-    }
+  $wasWebReady = Wait-Web -Seconds 4
+  if ($wasWebReady) {
+    Write-Log "StockAI web is already ready. Rebuilding Docker Compose services to apply local code updates."
+  }
 
-    if (-not (Wait-Docker -Seconds 120)) {
-      Show-Message "Docker Desktop is not ready. Please open Docker Desktop and try again."
-      exit 1
-    }
+  $dockerDesktop = "$env:ProgramFiles\Docker\Docker\Docker Desktop.exe"
+  if (Test-Path $dockerDesktop) {
+    Start-Process -FilePath $dockerDesktop -WindowStyle Hidden | Out-Null
+  }
 
-    Write-Log "Starting Docker Compose services."
-    docker compose -p $ProjectName up -d --build 2>&1 | Tee-Object -FilePath $LogPath -Append | Out-Host
-    if ($LASTEXITCODE -ne 0) {
-      if (Wait-Web -Seconds 4) {
-        Write-Log "Docker Compose startup failed, but StockAI web is already ready. Continuing."
-      } else {
-        Show-Message "Failed to start StockAI. Please send stockai-app.log to the developer."
-        exit 1
-      }
+  if (-not (Wait-Docker -Seconds 120)) {
+    Show-Message "Docker Desktop is not ready. Please open Docker Desktop and try again."
+    exit 1
+  }
+
+  Write-Log "Starting Docker Compose services."
+  docker compose -p $ProjectName up -d --build 2>&1 | Tee-Object -FilePath $LogPath -Append | Out-Host
+  if ($LASTEXITCODE -ne 0) {
+    if (Wait-Web -Seconds 4) {
+      Write-Log "Docker Compose startup failed, but StockAI web is already ready. Continuing."
     } else {
-      $StartedCompose = $true
-    }
-
-    if (-not (Wait-Web -Seconds 90)) {
-      Show-Message "StockAI web page did not become ready. Please send stockai-app.log to the developer."
+      Show-Message "Failed to start StockAI. Please send stockai-app.log to the developer."
       exit 1
     }
+  } else {
+    $StartedCompose = -not $wasWebReady
+  }
+
+  if (-not (Wait-Web -Seconds 90)) {
+    Show-Message "StockAI web page did not become ready. Please send stockai-app.log to the developer."
+    exit 1
   }
 
   $edge = Find-Edge
