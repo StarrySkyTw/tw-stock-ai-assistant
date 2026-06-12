@@ -83,13 +83,37 @@ function Disable-AsciiProjectPath {
 function Wait-Docker {
   param([int]$Seconds = 120)
   for ($i = 0; $i -lt $Seconds; $i += 2) {
-    docker info *> $null
-    if ($LASTEXITCODE -eq 0) {
-      return $true
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+      docker info *> $null
+      if ($LASTEXITCODE -eq 0) {
+        return $true
+      }
+    } finally {
+      $ErrorActionPreference = $previousErrorActionPreference
     }
     Start-Sleep -Seconds 2
   }
   return $false
+}
+
+function Invoke-LoggedDockerCompose {
+  param([string[]]$Arguments)
+
+  $previousErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    & docker compose @Arguments 2>&1 | ForEach-Object {
+      $line = ($_ | Out-String).TrimEnd()
+      if ($line) {
+        Write-Log $line
+      }
+    }
+    return $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
 }
 
 function Wait-Web {
@@ -149,10 +173,10 @@ try {
   }
 
   Write-Log "Starting Docker Compose services."
-  docker compose -p $ProjectName up -d --build --remove-orphans 2>&1 | Tee-Object -FilePath $LogPath -Append | Out-Host
-  if ($LASTEXITCODE -ne 0) {
+  $composeExitCode = Invoke-LoggedDockerCompose -Arguments @("-p", $ProjectName, "up", "-d", "--build", "--remove-orphans")
+  if ($composeExitCode -ne 0) {
     if (Wait-Web -Seconds 4) {
-      Write-Log "Docker Compose startup failed, but StockAI web is already ready. Continuing."
+      Write-Log "Docker Compose startup failed with exit code $composeExitCode, but StockAI web is already ready. Continuing."
     } else {
       Show-Message "Failed to start StockAI. Please send stockai-app.log to the developer."
       exit 1
@@ -186,7 +210,7 @@ try {
 
   if ($StartedCompose) {
     Write-Log "App window closed. Stopping Docker Compose services."
-    docker compose -p $ProjectName down --remove-orphans 2>&1 | Tee-Object -FilePath $LogPath -Append | Out-Host
+    Invoke-LoggedDockerCompose -Arguments @("-p", $ProjectName, "down", "--remove-orphans") | Out-Null
   } else {
     Write-Log "App window closed. Existing Docker Compose services were left running."
   }
