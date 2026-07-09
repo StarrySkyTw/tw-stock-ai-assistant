@@ -65,6 +65,7 @@ def upgrade() -> None:
         "technical_snapshots",
         "analysis_results",
         "market_risk_snapshots",
+        "market_scan_results",
         "positions",
         "watchlists",
         "notification_channels",
@@ -83,6 +84,7 @@ def downgrade() -> None:
         "notification_channels",
         "watchlists",
         "positions",
+        "market_scan_results",
         "market_risk_snapshots",
         "analysis_results",
         "technical_snapshots",
@@ -192,6 +194,18 @@ def _create_remaining_table(table_name: str) -> None:
             sa.Column("payload", _json_type(), nullable=False),
             *common_ts,
         )
+    elif table_name == "market_scan_results":
+        op.create_table(
+            table_name,
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column("generated_at", sa.DateTime(), nullable=False),
+            sa.Column("universe_count", sa.Integer(), nullable=False),
+            sa.Column("completed_count", sa.Integer(), nullable=False),
+            sa.Column("failed_count", sa.Integer(), nullable=False),
+            sa.Column("payload", _json_type(), nullable=False),
+            *common_ts,
+        )
+        op.create_index("ix_market_scan_results_generated_at", table_name, ["generated_at"])
     elif table_name == "analysis_results":
         op.create_table(
             table_name,
@@ -268,4 +282,3 @@ def _create_remaining_table(table_name: str) -> None:
             sa.Column("trades", _json_type(), nullable=False),
             *common_ts,
         )
-

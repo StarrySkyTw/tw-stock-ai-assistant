@@ -1,13 +1,72 @@
 from __future__ import annotations
 
+import asyncio
+from copy import deepcopy
+from threading import Lock
+from time import monotonic
+from typing import ClassVar
+
 import numpy as np
 
+from app.core.config import get_settings
 from app.services.calendar import market_refresh_clock, taipei_now, taipei_today
 from app.services.sample_data import make_price_history
 
 
 class MarketRiskEngine:
-    async def evaluate(self) -> dict:
+    _cache_lock: ClassVar[Lock] = Lock()
+    _cache_expires_at: ClassVar[float] = 0.0
+    _cache_value: ClassVar[dict | None] = None
+    _inflight: ClassVar[dict[int, asyncio.Task]] = {}
+
+    async def evaluate(self, force_refresh: bool = False) -> dict:
+        if not force_refresh:
+            cached = self._read_cache()
+            if cached is not None:
+                return cached
+
+        loop = asyncio.get_running_loop()
+        loop_id = id(loop)
+        with self._cache_lock:
+            task = self._inflight.get(loop_id)
+            if task is None or task.done():
+                task = loop.create_task(self._evaluate_uncached())
+                self._inflight[loop_id] = task
+
+        try:
+            result = await task
+        finally:
+            with self._cache_lock:
+                if self._inflight.get(loop_id) is task:
+                    self._inflight.pop(loop_id, None)
+
+        self._write_cache(result)
+        return deepcopy(result)
+
+    @classmethod
+    def clear_cache(cls) -> None:
+        with cls._cache_lock:
+            cls._cache_expires_at = 0.0
+            cls._cache_value = None
+            cls._inflight.clear()
+
+    @classmethod
+    def _read_cache(cls) -> dict | None:
+        with cls._cache_lock:
+            if cls._cache_value is None or monotonic() >= cls._cache_expires_at:
+                return None
+            return deepcopy(cls._cache_value)
+
+    @classmethod
+    def _write_cache(cls, value: dict) -> None:
+        ttl = max(0, get_settings().market_risk_cache_ttl_seconds)
+        if ttl <= 0:
+            return
+        with cls._cache_lock:
+            cls._cache_value = deepcopy(value)
+            cls._cache_expires_at = monotonic() + ttl
+
+    async def _evaluate_uncached(self) -> dict:
         indicators = await self._load_indicators()
         score = 50.0
         reasons: list[str] = []

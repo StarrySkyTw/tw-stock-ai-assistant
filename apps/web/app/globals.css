@@ -3,29 +3,44 @@
 @tailwind utilities;
 
 :root {
-  --color-ink: 23 23 23;
-  --color-muted: 94 94 94;
-  --color-line: 214 214 214;
-  --color-paper: 247 247 247;
-  --color-panel: 255 255 255;
-  --color-control: 244 244 245;
-  --color-gain: 22 163 74;
-  --color-warn: 202 138 4;
-  --color-loss: 220 38 38;
+  --color-ink: 230 237 245;
+  --color-muted: 148 163 184;
+  --color-line: 40 56 74;
+  --color-paper: 9 17 26;
+  --color-panel: 17 26 37;
+  --color-control: 15 23 34;
+  --color-gain: 134 239 172;
+  --color-warn: 250 204 21;
+  --color-loss: 248 113 113;
+  color-scheme: dark;
   color: rgb(var(--color-ink));
   background: rgb(var(--color-paper));
 }
 
+:root[data-theme="light"] {
+  --color-ink: 12 27 42;
+  --color-muted: 83 100 119;
+  --color-line: 215 224 232;
+  --color-paper: 243 247 251;
+  --color-panel: 255 255 255;
+  --color-control: 248 251 253;
+  --color-gain: 22 163 74;
+  --color-warn: 202 138 4;
+  --color-loss: 220 38 38;
+  color-scheme: light;
+}
+
 :root[data-theme="dark"] {
-  --color-ink: 245 245 245;
-  --color-muted: 168 168 168;
-  --color-line: 55 55 55;
-  --color-paper: 10 10 10;
-  --color-panel: 23 23 23;
-  --color-control: 38 38 38;
-  --color-gain: 74 222 128;
+  --color-ink: 230 237 245;
+  --color-muted: 148 163 184;
+  --color-line: 40 56 74;
+  --color-paper: 9 17 26;
+  --color-panel: 17 26 37;
+  --color-control: 15 23 34;
+  --color-gain: 134 239 172;
   --color-warn: 250 204 21;
   --color-loss: 248 113 113;
+  color-scheme: dark;
 }
 
 * {
@@ -36,6 +51,15 @@ body {
   margin: 0;
   background: rgb(var(--color-paper));
   color: rgb(var(--color-ink));
+  font-family:
+    "Noto Sans TC",
+    "Microsoft JhengHei",
+    "PingFang TC",
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
 }
 
 button,
@@ -95,4 +119,411 @@ select {
 .chart-shell .modebar-btn svg path {
   fill: rgb(var(--color-ink)) !important;
   opacity: 1 !important;
+}
+
+:root[data-theme="dark"] .stockai-shell {
+  background: #09111a !important;
+  color: #e6edf5 !important;
+}
+
+:root[data-theme="dark"] .stockai-app {
+  background: #09111a !important;
+  color: #e6edf5 !important;
+}
+
+:root[data-theme="dark"] .stockai-content {
+  background: #09111a !important;
+  color: #e6edf5 !important;
+}
+
+:root[data-theme="dark"] .stockai-topbar,
+:root[data-theme="dark"] .stockai-panel,
+:root[data-theme="dark"] .stockai-card,
+:root[data-theme="dark"] .stockai-notice {
+  background: #111a25 !important;
+  border-color: #28384a !important;
+  color: #e6edf5 !important;
+  box-shadow: 0 8px 22px rgb(0 0 0 / 0.26) !important;
+}
+
+:root[data-theme="dark"] .stockai-content :where(h1, h2, h3, th, label, footer) {
+  color: #e6edf5 !important;
+}
+
+:root[data-theme="dark"] .stockai-content :where(button, input, select, textarea) {
+  background-color: #172232 !important;
+  border-color: #334155 !important;
+  color: #e6edf5 !important;
+}
+
+:root[data-theme="dark"] .stockai-topbar :where(button[class*="bg-[#fbfdff]"]),
+:root[data-theme="dark"] .stockai-topbar :where(button[class*="bg-white"]) {
+  background-color: #172232 !important;
+  border-color: #334155 !important;
+  color: #e6edf5 !important;
+}
+
+:root[data-theme="dark"] .stockai-topbar :where([class*="text-[#64748b]"], [class*="text-[#526174]"], [class*="text-[#506074]"], [class*="text-[#536579]"], [class*="text-[#405166]"]) {
+  color: #a7b5c6 !important;
+}
+
+:root[data-theme="dark"] .stockai-topbar :where([class*="text-[#0c1b2a]"], [class*="text-[#1f3349]"], [class*="text-[#334155]"]) {
+  color: #e6edf5 !important;
+}
+
+:root[data-theme="dark"] .stockai-topbar :where([class*="bg-[#d8e1ea]"], [class*="bg-[#d8e1e8]"]) {
+  background: #334155 !important;
+}
+
+:root[data-theme="dark"] .stockai-topbar :where([class*="bg-[#f1fbf6]"], [class*="bg-[#f0faf4]"]) {
+  background: #052e18 !important;
+  border-color: #166534 !important;
+  color: #86efac !important;
+}
+
+:root[data-theme="dark"] .stockai-topbar :where([class*="bg-[#fff8e8]"]) {
+  background: #332600 !important;
+  border-color: #a16207 !important;
+  color: #facc15 !important;
+}
+
+:root[data-theme="dark"] .stockai-topbar :where([class*="bg-[#fff1f2]"], [class*="bg-[#fffafa]"]) {
+  background: #3f1218 !important;
+  border-color: #991b1b !important;
+  color: #fca5a5 !important;
+}
+
+:root[data-theme="dark"] .stockai-topbar :where([class*="bg-[#f8fafc]"]) {
+  background: #172232 !important;
+  border-color: #334155 !important;
+  color: #cbd5e1 !important;
+}
+
+:root[data-theme="dark"] .stockai-content button:hover {
+  background-color: #1d2b3d !important;
+}
+
+:root[data-theme="dark"] .stockai-content button[class*="bg-[#08283d]"] {
+  background-color: #0f5a82 !important;
+  color: #ffffff !important;
+}
+
+:root[data-theme="dark"] .stockai-content :where(tbody tr) {
+  background: transparent !important;
+}
+
+:root[data-theme="dark"] .stockai-content :where(thead, thead tr, .stockai-table-head) {
+  background: #172232 !important;
+  color: #e6edf5 !important;
+}
+
+:root[data-theme="dark"] .stockai-content :where(table th, table td) {
+  border-color: #334155 !important;
+}
+
+:root[data-theme="dark"] .stockai-field {
+  background: #0f1722 !important;
+  border-color: #334155 !important;
+  color: #e6edf5 !important;
+}
+
+:root[data-theme="dark"] .stockai-content :where([class*="bg-[#f0faf4]"], [class*="bg-[#f1fbf6]"]) {
+  background: #052e18 !important;
+  border-color: #166534 !important;
+  color: #86efac !important;
+}
+
+:root[data-theme="dark"] .stockai-content :where([class*="bg-[#fff8e8]"]) {
+  background: #332600 !important;
+  border-color: #a16207 !important;
+  color: #facc15 !important;
+}
+
+:root[data-theme="dark"] .stockai-content :where([class*="bg-[#fff1f2]"], [class*="bg-[#fffafa]"]) {
+  background: #3f1218 !important;
+  border-color: #991b1b !important;
+  color: #fca5a5 !important;
+}
+
+:root[data-theme="dark"] .stockai-content :where([class*="bg-white"], [class*="bg-[#f8fafc]"], [class*="bg-[#f7fafc]"], [class*="bg-[#fbfdff]"], [class*="bg-[#f6fbff]"], [class*="bg-[#edf5fb]"], [class*="bg-[#eef3f8]"], [class*="bg-[#f1f6fb]"], [class*="bg-[#f2f6fa]"]) {
+  background: #172232 !important;
+  border-color: #334155 !important;
+  color: #dbe8f3 !important;
+}
+
+:root[data-theme="dark"] .stockai-analyst-strip {
+  background: #0f1722 !important;
+  border-color: #334155 !important;
+}
+
+:root[data-theme="dark"] .stockai-alert {
+  background: #2a1419 !important;
+  border-color: #7f1d1d !important;
+}
+
+:root[data-theme="dark"] .stockai-alert-title,
+:root[data-theme="dark"] .stockai-tone-loss {
+  color: #f87171 !important;
+}
+
+:root[data-theme="dark"] .stockai-headline,
+:root[data-theme="dark"] .stockai-tone-gain {
+  color: #86efac !important;
+}
+
+:root[data-theme="dark"] .stockai-tone-warn {
+  color: #facc15 !important;
+}
+
+:root[data-theme="dark"] .stockai-status-gain {
+  background: #052e18 !important;
+  border-color: #166534 !important;
+  color: #86efac !important;
+}
+
+:root[data-theme="dark"] .stockai-status-warn {
+  background: #332600 !important;
+  border-color: #a16207 !important;
+  color: #facc15 !important;
+}
+
+:root[data-theme="dark"] .stockai-status-loss,
+:root[data-theme="dark"] .stockai-nochase {
+  background: #3f1218 !important;
+  border-color: #991b1b !important;
+  color: #fca5a5 !important;
+}
+
+:root[data-theme="dark"] .stockai-status-neutral {
+  background: #172232 !important;
+  border-color: #334155 !important;
+  color: #cbd5e1 !important;
+}
+
+.stockai-level-support {
+  background: #f1fbf6;
+  border-color: #b8dcc7;
+  color: #075f3f;
+}
+
+.stockai-level-resistance {
+  background: #fff7ed;
+  border-color: #fed7aa;
+  color: #9a3412;
+}
+
+.stockai-level-neutral {
+  background: #f8fafc;
+  border-color: #d7e0e8;
+  color: #304256;
+}
+
+.stockai-side-active {
+  background: #1f5d8d !important;
+  color: #ffffff !important;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.18) !important;
+}
+
+.stockai-progress-track {
+  position: relative;
+}
+
+.stockai-progress-fill {
+  background: linear-gradient(90deg, #245b86, #16a34a);
+  min-width: 0.25rem;
+  transition: width 240ms ease;
+}
+
+.stockai-progress-active {
+  background-size: 180% 100%;
+  animation: stockai-progress-sweep 1.15s ease-in-out infinite;
+}
+
+@keyframes stockai-progress-sweep {
+  0% {
+    background-position: 0% 50%;
+  }
+
+  50% {
+    background-position: 100% 50%;
+  }
+
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.stockai-sidebar-body {
+  cursor: grab;
+  overscroll-behavior: contain;
+  scrollbar-color: rgb(139 165 191 / 0.65) transparent;
+  scrollbar-width: thin;
+  touch-action: pan-x pan-y;
+  user-select: none;
+}
+
+.stockai-sidebar-body::-webkit-scrollbar {
+  height: 6px;
+  width: 6px;
+}
+
+.stockai-sidebar-body::-webkit-scrollbar-thumb {
+  background: rgb(139 165 191 / 0.55);
+  border-radius: 999px;
+}
+
+.stockai-sidebar-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.stockai-sidebar-body:active {
+  cursor: grabbing;
+}
+
+@media (min-width: 1024px) {
+  .stockai-sidebar-body {
+    cursor: default;
+    touch-action: auto;
+    user-select: auto;
+  }
+
+  .stockai-sidebar-body:active {
+    cursor: default;
+  }
+}
+
+.stockai-sidebar-ticker,
+.stockai-sidebar-ticker-extra {
+  background: transparent !important;
+  color: #c7d8e5 !important;
+}
+
+.stockai-sidebar-ticker .font-semibold,
+.stockai-sidebar-ticker-extra.font-semibold {
+  color: #ffffff !important;
+}
+
+:root[data-theme="dark"] .stockai-sidebar :where(.stockai-sidebar-ticker, .stockai-sidebar-ticker-extra) {
+  background: transparent !important;
+  color: #c7d8e5 !important;
+}
+
+:root[data-theme="dark"] .stockai-sidebar :where(.stockai-sidebar-ticker .font-semibold, .stockai-sidebar-ticker-extra.font-semibold) {
+  color: #ffffff !important;
+}
+
+@media (min-width: 1024px) and (max-height: 720px) {
+  .stockai-sidebar-ticker {
+    padding-top: 0.5rem;
+  }
+
+  .stockai-sidebar-ticker-extra {
+    display: none;
+  }
+}
+
+:root[data-theme="dark"] .stockai-level-support {
+  background: #062c20 !important;
+  border-color: #047857 !important;
+  color: #9ff5cf !important;
+}
+
+:root[data-theme="dark"] .stockai-level-resistance {
+  background: #351b0b !important;
+  border-color: #c2410c !important;
+  color: #fdba74 !important;
+}
+
+:root[data-theme="dark"] .stockai-level-neutral {
+  background: #172232 !important;
+  border-color: #334155 !important;
+  color: #dbe8f3 !important;
+}
+
+:root[data-theme="dark"] .stockai-content :where([class*="text-[#64748b]"], [class*="text-[#526174]"], [class*="text-[#506074]"], [class*="text-[#536579]"], [class*="text-[#405166]"], [class*="text-[#35465a]"], [class*="text-[#304256]"], [class*="text-[#6c7a89]"], [class*="text-[#3e4d5d]"], [class*="text-[#334355]"], [class*="text-[#5f6e7d]"], [class*="text-[#35475b]"], [class*="text-[#536477]"], [class*="text-[#7a8795]"], [class*="text-[#6d7c8c]"], [class*="text-[#6b7988]"], [class*="text-[#697887]"]) {
+  color: #a7b5c6 !important;
+}
+
+:root[data-theme="dark"] .stockai-content :where([class*="text-[#121d2b]"], [class*="text-[#172233]"], [class*="text-[#182434]"], [class*="text-[#263445]"], [class*="text-[#243346]"], [class*="text-[#253548]"], [class*="text-[#0c1b2a]"], [class*="text-[#101923]"], [class*="text-[#172435]"], [class*="text-[#233243]"]) {
+  color: #e6edf5 !important;
+}
+
+:root[data-theme="dark"] .stockai-topbar :where([class*="text-[#0f3365]"], [class*="text-[#153b5a]"], [class*="text-[#213142]"], [class*="text-[#245b86]"]),
+:root[data-theme="dark"] .stockai-content :where([class*="text-[#0f3365]"], [class*="text-[#153b5a]"], [class*="text-[#213142]"], [class*="text-[#245b86]"]) {
+  color: #bfdbfe !important;
+}
+
+:root[data-theme="dark"] .stockai-topbar :where([class*="text-[#0f7a48]"], [class*="text-[#147234]"], [class*="text-[#168447]"], [class*="text-[#16783a]"], [class*="text-[#17783b]"], [class*="text-[#15803d]"]),
+:root[data-theme="dark"] .stockai-content :where([class*="text-[#0f7a48]"], [class*="text-[#147234]"], [class*="text-[#168447]"], [class*="text-[#16783a]"], [class*="text-[#17783b]"], [class*="text-[#15803d]"]) {
+  color: #86efac !important;
+}
+
+:root[data-theme="dark"] .stockai-topbar :where([class*="text-[#dc2626]"], [class*="text-[#d51f2a]"], [class*="text-[#dc3545]"], [class*="text-[#b4232c]"], [class*="text-[#9f1f32]"], [class*="text-[#8a1f2d]"]),
+:root[data-theme="dark"] .stockai-content :where([class*="text-[#dc2626]"], [class*="text-[#d51f2a]"], [class*="text-[#dc3545]"], [class*="text-[#b4232c]"], [class*="text-[#9f1f32]"], [class*="text-[#8a1f2d]"]) {
+  color: #fb7185 !important;
+}
+
+:root[data-theme="dark"] .stockai-content :where([class*="text-[#c28200]"], [class*="text-[#9a6700]"], [class*="text-[#f2b514]"], [class*="text-[#e3a10b]"]) {
+  color: #facc15 !important;
+}
+
+:root[data-theme="dark"] .stockai-content :where([class*="border-[#cbd7e2]"], [class*="border-[#d7e0e8]"], [class*="border-[#d8e1e8]"]) {
+  border-color: #334155 !important;
+}
+
+:root[data-theme="dark"] .stockai-content :where([class*="bg-[#e7edf3]"], [class*="bg-[#d8e1e8]"]) {
+  background: #263447 !important;
+}
+
+:root[data-theme="dark"] .stockai-content :where([class*="border-[#eef2f6]"], [class*="border-[#e2e8f0]"]) {
+  border-color: #2d3d51 !important;
+}
+
+:root[data-theme="dark"] .stockai-content :where([class*="hover:bg-[#eef4f8]"]):hover {
+  background: #1d2b3d !important;
+}
+
+:root[data-theme="dark"] .stockai-content button:disabled {
+  background: #273449 !important;
+  border-color: #34445b !important;
+  color: #8da0b6 !important;
+}
+
+.stockai-quote-gain {
+  color: #dc2626 !important;
+}
+
+.stockai-quote-loss {
+  color: #168447 !important;
+}
+
+.stockai-quote-neutral {
+  color: #334155 !important;
+}
+
+:root[data-theme="dark"] .stockai-quote-gain {
+  color: #fb7185 !important;
+}
+
+:root[data-theme="dark"] .stockai-quote-loss {
+  color: #7ee6a2 !important;
+}
+
+:root[data-theme="dark"] .stockai-quote-neutral {
+  color: #dbe8f3 !important;
+}
+
+:root[data-theme="dark"] .stockai-app nav[aria-label="主要功能"] {
+  background: rgb(17 26 37 / 0.96) !important;
+  border-color: #334155 !important;
+  box-shadow: 0 -10px 24px rgb(0 0 0 / 0.38) !important;
+}
+
+:root[data-theme="dark"] .stockai-app nav[aria-label="主要功能"] button {
+  color: #cbd5e1 !important;
+}
+
+:root[data-theme="dark"] .stockai-app nav[aria-label="主要功能"] button[class*="bg-[#1e6aa5]"] {
+  background: #1f6fa8 !important;
+  color: #ffffff !important;
 }

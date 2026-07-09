@@ -1,12 +1,26 @@
 from __future__ import annotations
 
-import json
+import asyncio
+from time import monotonic
 
-from app.services.calendar import taipei_now, taipei_today
+import pandas as pd
+
+from app.core.config import get_settings
+from app.services import sample_data
+from app.services.calendar import market_refresh_clock, taipei_now, taipei_today
 from app.services.data_providers import MarketDataService
+from app.services.data_providers.base import FundamentalData, ShareholdingData
+from app.services.data_providers.composite import _empty_institutional_flows, _empty_margin_balances
 from app.services.indicators import calculate_indicators, summarize_technical
+from app.services.industry import resolve_industry
 from app.services.market_risk import MarketRiskEngine
 from app.services.scoring import (
+    build_price_plan,
+    build_research_decision,
+    evaluate_breakout_potential,
+    evaluate_fundamental_gate,
+    evaluate_timing_gate,
+    evaluate_valuation_gate,
     recommendation_from_score,
     score_fundamental,
     score_institutional,
@@ -17,6 +31,7 @@ from app.services.scoring import (
     summarize_margin,
 )
 from app.services.sentiment import analyze_news_sentiment
+from app.services.source_quality import is_trusted_source
 
 
 class AnalysisService:
@@ -30,21 +45,49 @@ class AnalysisService:
         entry_price: float | None = None,
         highest_price: float | None = None,
         atr_multiplier: float = 2.0,
+        market_risk: dict | None = None,
+        data_timeout_seconds: float | None = None,
     ) -> dict:
         symbol = symbol.upper().strip()
-        stock_name = await self.data.stock_name(symbol)
-        prices, price_source = await self.data.prices(symbol, years=2)
+        settings = get_settings()
+        explicit_data_budget = data_timeout_seconds is not None
+        data_budget = max(0.35, data_timeout_seconds if explicit_data_budget else settings.analysis_data_timeout_seconds)
+        deadline = monotonic() + data_budget
+        source_timeout = _source_timeout_seconds(data_budget, explicit_data_budget)
+        risk_task = asyncio.create_task(self.risk_engine.evaluate()) if market_risk is None else None
+        (
+            stock_profile,
+            (prices, price_source),
+            (flows, flow_source),
+            (margin_rows, margin_source),
+            (fundamentals, fundamental_source),
+            (shareholding, shareholding_source),
+            (news, news_source),
+        ) = await asyncio.gather(
+            _with_timeout(self.data.stock_profile(symbol), _fallback_stock_profile(symbol), source_timeout),
+            _with_timeout(self.data.prices(symbol, years=2), _fallback_prices(symbol), source_timeout),
+            _with_timeout(self.data.institutional_flows(symbol), (_empty_institutional_flows(), "unavailable"), source_timeout),
+            _with_timeout(self.data.margin_balances(symbol), (_empty_margin_balances(), "unavailable"), source_timeout),
+            _with_timeout(self.data.fundamentals(symbol), (FundamentalData().to_dict(), "unavailable"), source_timeout),
+            _with_timeout(self.data.shareholding(symbol), (ShareholdingData().to_dict(), "unavailable"), source_timeout),
+            _with_timeout(self.data.news(symbol), ([], "unavailable"), source_timeout),
+        )
+        stock_name = stock_profile.get("name")
+        industry = stock_profile.get("industry")
+        risk = market_risk if market_risk is not None else await _with_timeout(
+            risk_task,
+            _fallback_market_risk(),
+            _remaining_timeout(deadline),
+        )
         indicators = calculate_indicators(prices)
         technical = summarize_technical(indicators)
-        flows, flow_source = await self.data.institutional_flows(symbol)
         institutional = summarize_institutional(flows)
-        margin_rows, margin_source = await self.data.margin_balances(symbol)
         margin = summarize_margin(margin_rows)
-        fundamentals, fundamental_source = await self.data.fundamentals(symbol)
-        shareholding, shareholding_source = await self.data.shareholding(symbol)
-        news, news_source = await self.data.news(symbol)
-        sentiment = await analyze_news_sentiment(symbol, news)
-        risk = await self.risk_engine.evaluate()
+        sentiment = await _with_timeout(
+            analyze_news_sentiment(symbol, news),
+            _fallback_sentiment(news),
+            _remaining_timeout(deadline),
+        )
         data_sources = {
             "price": price_source,
             "institutional": flow_source,
@@ -61,6 +104,26 @@ class AnalysisService:
         margin_adjustment, margin_reasons, margin_risks = score_margin(margin)
         fundamental_score, fund_reasons, fund_risks = score_fundamental(fundamentals)
         sentiment_score, sentiment_reasons, sentiment_risks = score_sentiment(sentiment)
+        if not is_trusted_source(flow_source, "institutional"):
+            institutional_score = 0.0
+            inst_reasons = []
+            inst_risks = ["法人籌碼資料未接入或不是可驗證真實來源，本輪不納入加減分。"]
+        if not is_trusted_source(margin_source, "margin"):
+            margin_adjustment = 0.0
+            margin_reasons = []
+            margin_risks = ["信用交易資料未接入或不是可驗證真實來源，本輪不納入加減分。"]
+        if not is_trusted_source(fundamental_source, "fundamental"):
+            fundamental_score = 0.0
+            fund_reasons = []
+            fund_risks = ["基本面資料不是可驗證真實來源，不採用 EPS、PE、ROE 或營收計分。"]
+        if not is_trusted_source(news_source, "news"):
+            sentiment_score = 0.0
+            sentiment_reasons = []
+            sentiment_risks = [_source_missing_note("新聞情緒", news_source)]
+        if _is_sample_source(price_source):
+            technical_score = 0.0
+            tech_reasons = []
+            tech_risks = ["價格資料不是可驗證歷史日 K，不採用 K 線或技術分數。"]
 
         raw_score = technical_score + institutional_score + fundamental_score + sentiment_score
         adjusted_score = raw_score
@@ -73,6 +136,9 @@ class AnalysisService:
             adjusted_score += risk_adjustment
             risks.append("Market Risk Engine 顯示風險紅燈，總分下修 8 分。")
         adjusted_score = max(0, min(100, adjusted_score))
+        adjusted_score, data_quality_caps = _apply_data_quality_score_cap(adjusted_score, data_sources)
+        if data_quality_caps:
+            risks.extend(data_quality_caps)
         score_breakdown = {
             "technical": round(technical_score, 2),
             "institutional": round(institutional_score, 2),
@@ -89,6 +155,31 @@ class AnalysisService:
         trailing = _trailing_take_profit(
             indicators, effective_entry, highest_price, atr_multiplier=atr_multiplier
         )
+        if _is_sample_source(price_source):
+            stop_loss = _untrusted_stop_loss()
+            trailing = _untrusted_trailing_take_profit(atr_multiplier)
+        fundamental_gate = evaluate_fundamental_gate(fundamentals)
+        valuation_gate = evaluate_valuation_gate(symbol, fundamentals)
+        timing_gate = evaluate_timing_gate(technical)
+        fundamental_gate, valuation_gate, timing_gate = _apply_data_quality_gate_guards(
+            fundamental_gate=fundamental_gate,
+            valuation_gate=valuation_gate,
+            timing_gate=timing_gate,
+            data_sources=data_sources,
+        )
+        price_plan = (
+            _untrusted_price_plan()
+            if _is_sample_source(price_source)
+            else build_price_plan(technical, timing_gate, valuation_gate)
+        )
+        research_decision = build_research_decision(
+            fundamental_gate=fundamental_gate,
+            valuation_gate=valuation_gate,
+            timing_gate=timing_gate,
+            price_plan=price_plan,
+            risk_lights=risk["lights"],
+            data_sources=data_sources,
+        )
         strategy_judgement = _strategy_judgement(
             adjusted_score=adjusted_score,
             technical=technical,
@@ -96,16 +187,31 @@ class AnalysisService:
             margin=margin,
             risk_lights=risk["lights"],
         )
+        breakout_potential = evaluate_breakout_potential(
+            fundamental_gate=fundamental_gate,
+            valuation_gate=valuation_gate,
+            timing_gate=timing_gate,
+            price_plan=price_plan,
+            technical=technical,
+            institutional=institutional,
+            margin=margin,
+            sentiment=sentiment,
+            risk_lights=risk["lights"],
+            data_sources=data_sources,
+        )
 
         reasons.append(f"價格資料來源：{price_source}；法人資料來源：{flow_source}。")
-        if fundamental_source != "finmind":
-            reasons.append("基本面資料目前使用 sample fallback，設定 FinMind token 後可取得真實資料。")
-        if news_source != "finmind":
-            reasons.append("新聞情緒目前使用 sample fallback。")
+        if not is_trusted_source(fundamental_source, "fundamental"):
+            reasons.append("基本面資料未接入可驗證真實來源，補齊後才採用 EPS、PE、ROE 或營收。")
+        if news_source == "sample":
+            reasons.append("新聞情緒目前使用示範來源，本輪不納入情緒加減分。")
+        elif not is_trusted_source(news_source, "news"):
+            reasons.append("新聞情緒資料未接入，本輪不納入情緒加減分。")
+        recommendation = _recommendation_for_analysis(adjusted_score, data_sources)
         decision_plan = _decision_plan(
             symbol=symbol,
             name=stock_name,
-            recommendation=recommendation_from_score(adjusted_score),
+            recommendation=recommendation,
             adjusted_score=adjusted_score,
             raw_score=raw_score,
             score_breakdown=score_breakdown,
@@ -124,161 +230,382 @@ class AnalysisService:
         return {
             "symbol": symbol,
             "name": stock_name,
+            "industry": industry,
             "analysis_date": taipei_today(),
             "generated_at": taipei_now(),
             "refresh": risk["refresh"],
             "data_sources": data_sources,
             "raw_score": round(raw_score, 2),
             "adjusted_score": round(adjusted_score, 2),
-            "recommendation": recommendation_from_score(adjusted_score),
+            "recommendation": recommendation,
             "reasons": reasons,
             "risks": risks or ["目前未偵測到重大單一風險，但仍需遵守停損。"],
             "technical": technical,
             "institutional": institutional,
             "margin": margin,
-            "fundamental": {**fundamentals, "signals": fund_reasons[:4]},
+            "fundamental": _fundamentals_for_response(fundamentals, fundamental_source, fund_reasons),
             "sentiment": sentiment,
             "stop_loss": stop_loss,
             "trailing_take_profit": trailing,
             "risk_lights": risk["lights"],
             "decision_plan": decision_plan,
+            "research_decision": research_decision,
+            "fundamental_gate": fundamental_gate,
+            "valuation_gate": valuation_gate,
+            "timing_gate": timing_gate,
+            "price_plan": price_plan,
             "strategy_judgement": strategy_judgement,
+            "breakout_potential": breakout_potential,
+            "kline_analysis": (
+                _untrusted_kline_analysis()
+                if _is_sample_source(price_source)
+                else _kline_analysis(technical, stop_loss, trailing, strategy_judgement)
+            ),
         }
 
     async def chart(self, symbol: str, range_name: str = "1y") -> dict:
-        import plotly.graph_objects as go
-        from plotly.subplots import make_subplots
-
         symbol = symbol.upper().strip()
         stock_name = await self.data.stock_name(symbol)
-        display_name = f"{symbol} {stock_name}" if stock_name else symbol
         years = 5 if range_name == "5y" else 3 if range_name == "3y" else 1
         prices, _ = await self.data.prices(symbol, years=years)
         df = calculate_indicators(prices)
-        fig = make_subplots(
-            rows=4,
-            cols=1,
-            shared_xaxes=True,
-            vertical_spacing=0.075,
-            row_heights=[0.5, 0.16, 0.18, 0.16],
-            subplot_titles=("價格走勢", "成交量", "MACD", "RSI14"),
-        )
-        fig.add_trace(
-            go.Candlestick(
-                x=df["date"],
-                open=df["open"],
-                high=df["high"],
-                low=df["low"],
-                close=df["close"],
-                name="K線",
-                increasing_line_color="#16a34a",
-                increasing_fillcolor="rgba(22, 163, 74, 0.45)",
-                decreasing_line_color="#dc2626",
-                decreasing_fillcolor="rgba(220, 38, 38, 0.45)",
-            ),
-            row=1,
-            col=1,
-        )
-        ma_styles = {
-            "ma5": ("MA5", "#f97316", 2.4),
-            "ma20": ("MA20", "#06b6d4", 3.0),
-            "ma60": ("MA60", "#8b5cf6", 3.0),
+        dates = [item.isoformat() for item in pd.to_datetime(df["date"]).dt.date]
+        figure = {
+            "data": [
+                {
+                    "type": "candlestick",
+                    "name": "K線",
+                    "x": dates,
+                    "open": _series_to_numbers(df["open"]),
+                    "high": _series_to_numbers(df["high"]),
+                    "low": _series_to_numbers(df["low"]),
+                    "close": _series_to_numbers(df["close"]),
+                },
+                {
+                    "type": "bar",
+                    "name": "成交量",
+                    "x": dates,
+                    "y": _series_to_numbers(df["volume"]),
+                },
+            ],
+            "layout": {
+                "title": f"{symbol} {stock_name or ''} 技術圖表".strip(),
+                "source": "compact-candles",
+            },
         }
-        for ma, (label, color, width) in ma_styles.items():
-            fig.add_trace(
-                go.Scatter(
-                    x=df["date"],
-                    y=df[ma],
-                    mode="lines",
-                    name=label,
-                    line={"color": color, "width": width},
-                    hovertemplate=f"{label}: %{{y:.2f}}<extra></extra>",
-                ),
-                row=1,
-                col=1,
-            )
-        fig.add_trace(
-            go.Bar(
-                x=df["date"],
-                y=df["volume"],
-                name="成交量",
-                marker={"color": "rgba(249, 115, 22, 0.65)"},
-                hovertemplate="成交量: %{y:,.0f}<extra></extra>",
-            ),
-            row=2,
-            col=1,
+        return {"symbol": symbol, "name": stock_name, "range": range_name, "figure": figure}
+
+    async def intraday(self, symbol: str) -> dict:
+        symbol = symbol.upper().strip()
+        stock_name, (points, metadata) = await asyncio.gather(
+            self.data.stock_name(symbol),
+            self.data.intraday_prices(symbol),
         )
-        fig.add_trace(
-            go.Scatter(
-                x=df["date"],
-                y=df["dif"],
-                name="DIF",
-                line={"color": "#0ea5e9", "width": 2.4},
-                hovertemplate="DIF: %{y:.2f}<extra></extra>",
-            ),
-            row=3,
-            col=1,
+        source = str(metadata.get("source") or "unavailable")
+        if points.empty:
+            return {
+                "symbol": symbol,
+                "name": stock_name,
+                "source": source,
+                "interval": "1m",
+                "trade_date": None,
+                "previous_close": None,
+                "open": None,
+                "high": None,
+                "low": None,
+                "latest": None,
+                "change": None,
+                "change_percent": None,
+                "volume": None,
+                "updated_at": taipei_now(),
+                "points": [],
+            }
+
+        sorted_points = points.sort_values("time").reset_index(drop=True)
+        first = sorted_points.iloc[0]
+        latest = sorted_points.iloc[-1]
+        latest_close = _float_or_none(latest.get("close"))
+        previous_close = _float_or_none(metadata.get("previous_close"))
+        change = (
+            latest_close - previous_close
+            if latest_close is not None and previous_close is not None
+            else None
         )
-        fig.add_trace(
-            go.Scatter(
-                x=df["date"],
-                y=df["macd"],
-                name="MACD",
-                line={"color": "#ec4899", "width": 2.4},
-                hovertemplate="MACD: %{y:.2f}<extra></extra>",
-            ),
-            row=3,
-            col=1,
+        change_percent = (
+            change / previous_close * 100
+            if change is not None and previous_close not in (None, 0)
+            else None
         )
-        fig.add_trace(
-            go.Bar(
-                x=df["date"],
-                y=df["osc"],
-                name="OSC",
-                marker={"color": "rgba(34, 197, 94, 0.55)"},
-                hovertemplate="OSC: %{y:.2f}<extra></extra>",
-            ),
-            row=3,
-            col=1,
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=df["date"],
-                y=df["rsi14"],
-                name="RSI14",
-                line={"color": "#a855f7", "width": 2.5},
-                hovertemplate="RSI14: %{y:.2f}<extra></extra>",
-            ),
-            row=4,
-            col=1,
-        )
-        fig.add_hline(y=0, line_width=1, line_dash="dot", line_color="#9ca3af", row=3, col=1)
-        fig.add_hline(y=70, line_width=1, line_dash="dot", line_color="#ef4444", row=4, col=1)
-        fig.add_hline(y=30, line_width=1, line_dash="dot", line_color="#22c55e", row=4, col=1)
-        fig.update_layout(
-            title={"text": f"{display_name} 技術圖表", "x": 0.01, "xanchor": "left"},
-            height=980,
-            margin=dict(l=96, r=32, t=72, b=84),
-            hovermode="x unified",
-            bargap=0.1,
-        )
-        fig.update_yaxes(title_text="", row=1, col=1, showline=True, linewidth=1)
-        fig.update_yaxes(title_text="", row=2, col=1, showline=True, linewidth=1)
-        fig.update_yaxes(title_text="", row=3, col=1, showline=True, linewidth=1)
-        fig.update_yaxes(title_text="", row=4, col=1, range=[0, 100], showline=True, linewidth=1)
-        fig.update_xaxes(showline=True, linewidth=1)
-        fig.update_xaxes(rangeslider_visible=False)
-        fig.update_xaxes(
-            rangeslider_visible=True,
-            rangeslider_thickness=0.07,
-            rangeslider_bgcolor="rgba(148, 163, 184, 0.16)",
-            rangeslider_bordercolor="#6b7280",
-            rangeslider_borderwidth=1,
-            row=4,
-            col=1,
-        )
-        _add_horizontal_axis_labels(fig)
-        return {"symbol": symbol, "name": stock_name, "range": range_name, "figure": json.loads(fig.to_json())}
+        trade_time = pd.to_datetime(latest["time"])
+        updated_at = metadata.get("regular_market_time")
+        if not hasattr(updated_at, "isoformat"):
+            updated_at = taipei_now()
+        volume = _float_or_none(metadata.get("regular_market_volume"))
+        if volume is None:
+            volume = float(sorted_points["volume"].sum())
+
+        return {
+            "symbol": symbol,
+            "name": stock_name,
+            "source": source,
+            "interval": "1m",
+            "trade_date": trade_time.date(),
+            "previous_close": previous_close,
+            "open": _float_or_none(first.get("open")),
+            "high": _float_or_none(sorted_points["high"].max()),
+            "low": _float_or_none(sorted_points["low"].min()),
+            "latest": latest_close,
+            "change": round(change, 2) if change is not None else None,
+            "change_percent": round(change_percent, 2) if change_percent is not None else None,
+            "volume": volume,
+            "updated_at": updated_at,
+            "points": [
+                {
+                    "time": row["time"],
+                    "open": float(row["open"]),
+                    "high": float(row["high"]),
+                    "low": float(row["low"]),
+                    "close": float(row["close"]),
+                    "volume": float(row["volume"]),
+                }
+                for _, row in sorted_points.iterrows()
+            ],
+        }
+
+
+def _kline_analysis(technical: dict, stop_loss: dict, trailing: dict, strategy: dict) -> dict:
+    close = _float_or_none(technical.get("latest_close"))
+    ma20 = _float_or_none(technical.get("ma", {}).get("ma20"))
+    ma60 = _float_or_none(technical.get("ma", {}).get("ma60"))
+    ma120 = _float_or_none(technical.get("ma", {}).get("ma120"))
+    ma240 = _float_or_none(technical.get("ma", {}).get("ma240"))
+    rsi14 = _float_or_none(technical.get("rsi", {}).get("rsi14"))
+    atr_stop = _float_or_none(stop_loss.get("atr_stop"))
+    take_profit = _float_or_none(trailing.get("current_take_profit_price"))
+    stance = str(strategy.get("stance", "wait"))
+    trend = str(technical.get("trend", "unknown"))
+
+    support_levels = [
+        _level_text("MA20", ma20),
+        _level_text("MA60", ma60),
+        _level_text("ATR stop", atr_stop),
+    ]
+    if ma120 is not None:
+        support_levels.append(_level_text("MA120", ma120))
+    if ma240 is not None:
+        support_levels.append(_level_text("MA240", ma240))
+
+    resistance_levels = []
+    if take_profit is not None:
+        resistance_levels.append(_level_text("trailing take-profit", take_profit))
+    if close is not None and ma20 is not None:
+        resistance_levels.append(f"Close vs MA20: {_fmt(close - ma20)}")
+    if rsi14 is not None:
+        resistance_levels.append(f"RSI14: {_fmt(rsi14)}")
+
+    if stance == "prepare_entry":
+        headline = "K 線偏多，等回測支撐或突破後分批，不追高。"
+        strategy_notes = [
+            "逢低買的前提是 MA20 或前低守住，且量能沒有失控放大。",
+            "不要在急跌破 MA60 時攤平；先等止跌 K 線和法人籌碼回穩。",
+            "若價格站上 MA20 且 RSI 未過熱，可用小部位試單，再用停損控風險。",
+        ]
+    elif stance == "hold_steady":
+        headline = "K 線偏整理，等拉回不破支撐再評估。"
+        strategy_notes = [
+            "已有持股以 MA20/ATR 停損管理，不因短線震盪情緒性殺低。",
+            "沒有持股先等回測支撐、量縮止跌，避免在區間上緣追價。",
+            "若 RSI 過熱或爆量長上影，先降低加碼速度。",
+        ]
+    elif stance == "reduce_risk":
+        headline = "K 線防守優先，破線時先降風險。"
+        strategy_notes = [
+            "跌破 MA60 或市場風險轉紅時，不把下跌誤判成逢低買。",
+            "先保留現金與觀察名單，等重新站回 MA20/MA60 再討論進場。",
+            "若已持有，依 ATR 或 MA60 停損檢查，不用情緒硬撐。",
+        ]
+    else:
+        headline = "K 線訊號不足，先等更清楚的支撐或轉強。"
+        strategy_notes = [
+            "等待價格回到 MA20 之上，或跌到支撐後出現止跌訊號。",
+            "沒有明確優勢時，先小部位或不交易，避免因想買而買。",
+            "把下一次判斷點放在 MA20、MA60、RSI 與量能變化。",
+        ]
+
+    invalidation = [
+        f"Close below MA120: {_fmt(ma120)}" if ma120 is not None else "MA120 unavailable",
+        f"Close below MA240: {_fmt(ma240)}" if ma240 is not None else "MA240 unavailable",
+        f"Close below MA60: {_fmt(ma60)}" if ma60 is not None else "MA60 unavailable",
+        f"ATR stop: {_fmt(atr_stop)}" if atr_stop is not None else "ATR stop unavailable",
+        "Market risk light turns red or key support breaks with volume.",
+    ]
+
+    return {
+        "headline": headline,
+        "trend": trend,
+        "support_levels": support_levels,
+        "resistance_levels": resistance_levels,
+        "strategy_notes": strategy_notes,
+        "invalidation": invalidation,
+    }
+
+
+def _level_text(label: str, value: float | None) -> str:
+    return f"{label}: {_fmt(value)}"
+
+
+def _series_to_numbers(series: pd.Series) -> list[float | None]:
+    values = pd.to_numeric(series, errors="coerce")
+    return [None if pd.isna(value) else float(value) for value in values]
+
+
+def _apply_data_quality_score_cap(adjusted_score: float, data_sources: dict[str, str]) -> tuple[float, list[str]]:
+    cap = 100.0
+    notes: list[str] = []
+    if not is_trusted_source(data_sources.get("fundamental"), "fundamental"):
+        cap = min(cap, 49.0)
+        notes.append("基本面資料不是可驗證真實來源，研究分數上限降到 49，只能觀察。")
+    if _is_sample_source(data_sources.get("price")):
+        cap = min(cap, 59.0)
+        notes.append("價格資料不是可驗證歷史日 K，不能用技術分數判斷進場。")
+
+    if adjusted_score > cap:
+        return cap, notes
+    return adjusted_score, notes
+
+
+def _recommendation_for_analysis(adjusted_score: float, data_sources: dict[str, str]) -> str:
+    if not is_trusted_source(data_sources.get("fundamental"), "fundamental") or _is_sample_source(data_sources.get("price")):
+        return "只觀察"
+    return recommendation_from_score(adjusted_score)
+
+
+def _apply_data_quality_gate_guards(
+    *,
+    fundamental_gate: dict,
+    valuation_gate: dict,
+    timing_gate: dict,
+    data_sources: dict[str, str],
+) -> tuple[dict, dict, dict]:
+    if not is_trusted_source(data_sources.get("fundamental"), "fundamental"):
+        fundamental_gate = _untrusted_fundamental_gate()
+        valuation_gate = _untrusted_valuation_gate()
+    if _is_sample_source(data_sources.get("price")):
+        timing_gate = _untrusted_timing_gate()
+    return fundamental_gate, valuation_gate, timing_gate
+
+
+def _untrusted_fundamental_gate() -> dict:
+    return {
+        "status": "unknown",
+        "grade": "資料不足",
+        "passed": False,
+        "failed_reasons": ["基本面資料不是可驗證真實來源，不採用 EPS、PE、ROE 或營收做結論。"],
+        "metrics": {
+            "eps": None,
+            "roe": None,
+            "gross_margin": None,
+            "operating_margin": None,
+            "revenue_yoy": None,
+            "revenue_mom": None,
+            "pe_ratio": None,
+            "pb_ratio": None,
+        },
+    }
+
+
+def _untrusted_valuation_gate() -> dict:
+    return {
+        "status": "unknown",
+        "pe_ratio": None,
+        "pe_band": "資料不足",
+        "sector_band": "等待真實基本面",
+        "is_low_valuation": False,
+        "warning": "基本面不是可驗證真實來源，不採用 PE、PB 或產業估值區間。",
+    }
+
+
+def _untrusted_timing_gate() -> dict:
+    return {
+        "status": "unknown",
+        "trend": "等待真實日 K",
+        "support_zone": "等待真實日 K",
+        "no_chase_zone": "等待真實日 K",
+        "entry_conditions": [
+            "先接上 FinMind、Yahoo 或 TWSE 可驗證價格資料。",
+            "沒有真實日 K 前，不使用支撐、壓力、均線或失效價。",
+        ],
+        "invalidation_price": None,
+    }
+
+
+def _untrusted_price_plan() -> dict:
+    return {
+        "research_price": None,
+        "watch_price": None,
+        "invalidation_price": None,
+        "position_size_hint": "0%，價格資料不是可驗證歷史日 K；等真實日 K 後再建立研究價與失效價。",
+    }
+
+
+def _untrusted_stop_loss() -> dict:
+    return {
+        "fixed_5_percent": None,
+        "fixed_8_percent": None,
+        "fixed_10_percent": None,
+        "atr_stop": None,
+        "ma20_stop_triggered": False,
+        "ma60_stop_triggered": False,
+        "notes": ["價格資料不是可驗證歷史日 K，不計算停損、停利或 ATR 風險位。"],
+    }
+
+
+def _untrusted_trailing_take_profit(atr_multiplier: float) -> dict:
+    return {
+        "current_take_profit_price": None,
+        "atr_multiplier": atr_multiplier,
+        "estimated_return_percent": None,
+        "risk_reward_ratio": None,
+        "highest_price_used": None,
+        "is_estimated_highest_price": False,
+    }
+
+
+def _untrusted_kline_analysis() -> dict:
+    return {
+        "headline": "價格來源不足，K 線數字暫不採用",
+        "trend": "等待真實日 K",
+        "support_levels": ["等待真實日 K"],
+        "resistance_levels": ["等待真實日 K"],
+        "strategy_notes": [
+            "目前價格資料不是可驗證歷史日 K，不畫推估支撐或壓力。",
+            "先確認資料來源，再討論進場條件、失效價與部位大小。",
+        ],
+        "invalidation": ["等待真實日 K"],
+    }
+
+
+def _fundamentals_for_response(
+    fundamentals: dict[str, float | None],
+    fundamental_source: str,
+    signals: list[str],
+) -> dict[str, float | list[str] | None]:
+    if is_trusted_source(fundamental_source, "fundamental"):
+        return {**fundamentals, "signals": signals[:4]}
+    return {
+        **{key: None for key in fundamentals},
+        "signals": ["基本面資料不是可驗證真實來源，不顯示未驗證 EPS、PE、ROE 或營收。"],
+    }
+
+
+def _is_sample_source(source: str | None) -> bool:
+    return not source or "sample" in source.lower()
+
+
+def _source_missing_note(label: str, source: str) -> str:
+    if source == "sample":
+        return f"{label}仍是示範來源，本輪不納入加減分。"
+    return f"{label}資料未接入，本輪不納入加減分。"
 
 
 def _decision_plan(
@@ -303,12 +630,22 @@ def _decision_plan(
     composite_light = risk_lights.get("composite", "yellow")
     risk_indicator = risk_lights.get("risk_indicator", "yellow")
     trend = technical.get("trend", "neutral")
+    price_untrusted = _is_sample_source(data_sources.get("price"))
+    if price_untrusted:
+        trend = "neutral"
     close = _float_or_none(technical.get("latest_close"))
     ma20 = _float_or_none(technical.get("ma", {}).get("ma20"))
     ma60 = _float_or_none(technical.get("ma", {}).get("ma60"))
     atr_stop = _float_or_none(stop_loss.get("atr_stop"))
     take_profit = _float_or_none(trailing.get("current_take_profit_price"))
     risk_reward = _float_or_none(trailing.get("risk_reward_ratio"))
+    if price_untrusted:
+        close = None
+        ma20 = None
+        ma60 = None
+        atr_stop = None
+        take_profit = None
+        risk_reward = None
     flow_5d = _float_or_none(institutional.get("five_day_total")) or 0.0
     flow_20d = _float_or_none(institutional.get("twenty_day_total")) or 0.0
     margin_5d = _float_or_none(margin.get("five_day_change")) or 0.0
@@ -339,7 +676,7 @@ def _decision_plan(
             _break_condition("收盤價跌破 MA60", close, ma60),
             _margin_risk_condition("融資連續增加", margin_5d, margin_20d),
             "RSI14 高於 75 且沒有回測支撐，不追價。",
-            "新聞或基本面資料仍是 sample fallback 時，不把結論當成完整事實。",
+            "新聞或基本面資料不是可驗證真實來源時，不把結論當成完整事實。",
         ],
         "出場條件": [
             _stop_condition("跌破 ATR 停損", close, atr_stop),
@@ -391,8 +728,10 @@ def _decision_plan(
         f"基本面資料來源：{data_sources.get('fundamental', 'unknown')}",
         f"新聞資料來源：{data_sources.get('news', 'unknown')}",
     ]
-    if any(source != "finmind" for key, source in data_sources.items() if key in {"fundamental", "news"}):
-        data_quality.append("基本面或新聞若為 sample fallback，適合練習流程，不適合直接當實盤依據。")
+    if not is_trusted_source(data_sources.get("fundamental"), "fundamental"):
+        data_quality.append("基本面不是可驗證真實來源時，只能當觀察流程，不列為可研究依據。")
+    if data_sources.get("news") not in {"finmind", "sample"}:
+        data_quality.append("新聞資料未接入時，不使用情緒分數加減分。")
 
     return {
         "headline": headline,
@@ -451,9 +790,12 @@ def _decision_confidence(
     reasons: list[str],
     risks: list[str],
 ) -> str:
-    fallback_count = sum(1 for source in data_sources.values() if source not in {"finmind", "yahoo", "twse"})
+    price_source = str(data_sources.get("price", "")).lower()
+    core_untrusted = not is_trusted_source(data_sources.get("fundamental"), "fundamental") or not (
+        "sample" not in price_source and any(provider in price_source for provider in ("finmind", "twse", "yahoo"))
+    )
     mixed_evidence = bool(reasons and risks)
-    if fallback_count >= 2 or composite_light == "red":
+    if core_untrusted or composite_light == "red":
         return "低"
     if adjusted_score >= 75 and trend == "bullish" and composite_light == "green" and not mixed_evidence:
         return "高"
@@ -631,7 +973,7 @@ def _ai_snapshot_prompt(
     lines = [
         "請用保守、可驗證、不可保證報酬的方式分析以下股票快照。",
         f"標的：{display_name}",
-        f"總分：{round(adjusted_score, 1)} / 100，原始分數：{round(raw_score, 1)}，系統建議：{recommendation}",
+        f"總分：{round(adjusted_score, 1)} / 100，原始分數：{round(raw_score, 1)}，研究狀態：{recommendation}",
         (
             "風險燈號："
             f"大盤 {_light_label(risk_lights.get('market_trend'))}，"
@@ -765,31 +1107,80 @@ def _trailing_take_profit(indicators, entry_price: float, highest_price: float |
     }
 
 
-def _add_horizontal_axis_labels(fig) -> None:
-    labels = [
-        ("yaxis", "價格"),
-        ("yaxis2", "成交量"),
-        ("yaxis3", "MACD"),
-        ("yaxis4", "RSI"),
-    ]
-    for axis_name, label in labels:
-        domain = getattr(fig.layout, axis_name).domain
-        fig.add_annotation(
-            xref="paper",
-            yref="paper",
-            x=-0.065,
-            y=(domain[0] + domain[1]) / 2,
-            text=label,
-            textangle=0,
-            showarrow=False,
-            xanchor="right",
-            yanchor="middle",
-            font={"size": 13},
-        )
-
-
 def _float_or_none(value: object) -> float | None:
     try:
         return float(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+async def _with_timeout(coro, fallback, timeout_seconds: float):
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout_seconds)
+    except Exception:
+        return fallback
+
+
+def _remaining_timeout(deadline: float) -> float:
+    return max(0.03, deadline - monotonic())
+
+
+def _source_timeout_seconds(data_budget: float, explicit_data_budget: bool) -> float:
+    if not explicit_data_budget or data_budget <= 1.0:
+        return max(0.15, min(0.45, data_budget * 0.7))
+    return max(0.45, min(9.0, data_budget * 0.95))
+
+
+def _fallback_stock_profile(symbol: str) -> dict[str, str | None]:
+    name = sample_data.stock_name(symbol)
+    return {"name": name, "industry": resolve_industry(symbol, name, None)}
+
+
+def _fallback_prices(symbol: str) -> tuple[pd.DataFrame, str]:
+    return sample_data.make_price_history(symbol, years=2), "sample"
+
+
+def _fallback_market_risk() -> dict:
+    return {
+        "status": "市場資料逾時",
+        "score": 50.0,
+        "lights": {
+            "market_trend": "yellow",
+            "institutional_flow": "yellow",
+            "technical": "yellow",
+            "risk_indicator": "yellow",
+            "composite": "yellow",
+            "table": [
+                {"item": "大盤趨勢", "status": "🟡"},
+                {"item": "法人動向", "status": "🟡"},
+                {"item": "技術面", "status": "🟡"},
+                {"item": "風險指標", "status": "🟡"},
+                {"item": "綜合評價", "status": "🟡"},
+            ],
+        },
+        "indicators": {},
+        "reasons": ["市場風險資料讀取逾時，本輪先用中性燈號，避免慢資料源卡住畫面。"],
+        "generated_at": taipei_now(),
+        "market_date": taipei_today(),
+        "refresh": _fallback_refresh_info(),
+    }
+
+
+def _fallback_sentiment(news: list[dict]) -> dict:
+    headlines = [str(item.get("title", "")) for item in news if item.get("title")]
+    return {
+        "score": 0.0,
+        "label": "neutral",
+        "summary": "新聞情緒分析逾時，本輪不納入情緒加減分。",
+        "headlines": headlines[:5],
+        "model": None,
+        "error": "timeout",
+    }
+
+
+def _fallback_refresh_info() -> dict:
+    refresh = market_refresh_clock()
+    return {
+        **refresh,
+        "message": f"{refresh['message']} 市場風險資料本輪逾時，請稍後重整確認。",
+    }

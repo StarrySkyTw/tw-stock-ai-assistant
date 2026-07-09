@@ -1,8 +1,10 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+import asyncio
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app import models  # noqa: F401
 from app.api.routes import analysis, backtests, jobs, market, notifications, positions, radar, reports, watchlist
@@ -15,6 +17,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     if settings.sqlalchemy_url.startswith("sqlite"):
         Base.metadata.create_all(bind=engine)
+    asyncio.create_task(analysis.warm_analysis_cache())
     yield
 
 
@@ -35,9 +38,10 @@ def create_app() -> FastAPI:
     )
 
     @app.middleware("http")
-    async def no_cache_api_responses(request, call_next):
+    async def no_cache_dynamic_responses(request, call_next):
         response = await call_next(request)
-        if request.url.path.startswith(settings.api_prefix):
+        path = request.url.path
+        if path.startswith(settings.api_prefix) or path == "/" or path.endswith(".html"):
             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
             response.headers["Pragma"] = "no-cache"
         return response
@@ -55,6 +59,9 @@ def create_app() -> FastAPI:
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    if settings.static_web_dir and settings.static_web_dir.exists():
+        app.mount("/", StaticFiles(directory=settings.static_web_dir, html=True), name="static_web")
 
     return app
 

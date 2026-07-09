@@ -1,3 +1,8 @@
+param(
+  [switch]$Docker,
+  [switch]$SmokeTest
+)
+
 $ErrorActionPreference = "Stop"
 
 $OriginalProjectDir = $PSScriptRoot
@@ -144,6 +149,32 @@ function Find-Edge {
   return $null
 }
 
+function Invoke-NativePowerShellLauncher {
+  param([string]$LauncherPath)
+  $nativeArgs = @(
+    "-NoProfile",
+    "-ExecutionPolicy", "Bypass",
+    "-WindowStyle", "Hidden",
+    "-File", $LauncherPath,
+    "-SkipInstall"
+  )
+  if ($SmokeTest) {
+    $nativeArgs += "-SmokeTest"
+  }
+  & powershell.exe @nativeArgs
+  return $LASTEXITCODE
+}
+
+function Invoke-NativeCmdLauncher {
+  param([string]$LauncherPath)
+  $nativeArgs = @("/c", $LauncherPath, "-SkipInstall")
+  if ($SmokeTest) {
+    $nativeArgs += "-SmokeTest"
+  }
+  & cmd.exe @nativeArgs
+  return $LASTEXITCODE
+}
+
 try {
   $LauncherMutex = New-Object System.Threading.Mutex($false, "Local\StockAIAppLauncher")
   $HasLauncherMutex = $LauncherMutex.WaitOne(1000)
@@ -157,32 +188,74 @@ try {
   Set-Location $ProjectDir
   Write-Log "Starting StockAI app launcher."
 
-  $wasWebReady = Wait-Web -Seconds 4
-  if ($wasWebReady) {
-    Write-Log "StockAI web is already ready. Rebuilding Docker Compose services to apply local code updates."
-  }
-
-  $dockerDesktop = "$env:ProgramFiles\Docker\Docker\Docker Desktop.exe"
-  if (Test-Path $dockerDesktop) {
-    Start-Process -FilePath $dockerDesktop -WindowStyle Hidden | Out-Null
-  }
-
-  if (-not (Wait-Docker -Seconds 120)) {
-    Show-Message "Docker Desktop is not ready. Please open Docker Desktop and try again."
-    exit 1
-  }
-
-  Write-Log "Starting Docker Compose services."
-  $composeExitCode = Invoke-LoggedDockerCompose -Arguments @("-p", $ProjectName, "up", "-d", "--build", "--remove-orphans")
-  if ($composeExitCode -ne 0) {
-    if (Wait-Web -Seconds 4) {
-      Write-Log "Docker Compose startup failed with exit code $composeExitCode, but StockAI web is already ready. Continuing."
+  if (-not $Docker) {
+    $nativeLauncher = Join-Path $OriginalProjectDir "stockai-native-app.ps1"
+    if (Test-Path $nativeLauncher) {
+      try {
+        $nativeStatusRaw = & $nativeLauncher -CheckRequirements
+        $nativeStatus = $nativeStatusRaw | ConvertFrom-Json
+        if ($nativeStatus.ready_to_launch_without_install) {
+          Write-Log "Native launcher is ready. Delegating to stockai-native-app.ps1."
+          $nativeExitCode = Invoke-NativePowerShellLauncher $nativeLauncher
+          exit $nativeExitCode
+        }
+        Write-Log "Native launcher is not ready. Falling back to Docker launcher. Missing: $($nativeStatus.missing -join ', ')"
+      } catch {
+        Write-Log "Native launcher check failed. Falling back to Docker launcher. $($_.Exception.Message)"
+      }
     } else {
-      Show-Message "Failed to start StockAI. Please send stockai-app.log to the developer."
-      exit 1
+      $nativeCmdLauncher = Join-Path $OriginalProjectDir "stockai-native-app.cmd"
+      if (Test-Path $nativeCmdLauncher) {
+        try {
+          $nativeStatusRaw = & $nativeCmdLauncher -CheckRequirements
+          $nativeStatus = $nativeStatusRaw | ConvertFrom-Json
+          if ($nativeStatus.ready_to_launch_without_install) {
+            Write-Log "Native PowerShell launcher was not found. Delegating to stockai-native-app.cmd."
+            $nativeExitCode = Invoke-NativeCmdLauncher $nativeCmdLauncher
+            exit $nativeExitCode
+          }
+          Write-Log "Native CMD launcher is not ready. Falling back to Docker launcher. Missing: $($nativeStatus.missing -join ', ')"
+        } catch {
+          Write-Log "Native CMD launcher check failed. Falling back to Docker launcher. $($_.Exception.Message)"
+        }
+      } else {
+        Write-Log "Native launcher was not found. Falling back to Docker launcher."
+      }
     }
   } else {
-    $StartedCompose = -not $wasWebReady
+    Write-Log "Docker switch was provided. Skipping native launcher."
+  }
+
+  $wasWebReady = Wait-Web -Seconds 4
+  if ($wasWebReady) {
+    Write-Log "StockAI web is already ready. Skipping Docker Compose startup."
+  } else {
+    $dockerDesktop = "$env:ProgramFiles\Docker\Docker\Docker Desktop.exe"
+    if (Test-Path $dockerDesktop) {
+      Start-Process -FilePath $dockerDesktop -WindowStyle Hidden | Out-Null
+    }
+
+    if (-not (Wait-Docker -Seconds 120)) {
+      Show-Message "Docker Desktop is not ready. Please open Docker Desktop and try again."
+      exit 1
+    }
+
+    Write-Log "Starting Docker Compose services."
+    $composeExitCode = Invoke-LoggedDockerCompose -Arguments @("-p", $ProjectName, "up", "-d", "--remove-orphans")
+    if ($composeExitCode -ne 0) {
+      Write-Log "Fast Docker Compose startup failed with exit code $composeExitCode. Retrying with --build."
+      $composeExitCode = Invoke-LoggedDockerCompose -Arguments @("-p", $ProjectName, "up", "-d", "--build", "--remove-orphans")
+    }
+    if ($composeExitCode -ne 0) {
+      if (Wait-Web -Seconds 4) {
+        Write-Log "Docker Compose startup failed with exit code $composeExitCode, but StockAI web is already ready. Continuing."
+      } else {
+        Show-Message "Failed to start StockAI. Please send stockai-app.log to the developer."
+        exit 1
+      }
+    } else {
+      $StartedCompose = $true
+    }
   }
 
   if (-not (Wait-Web -Seconds 90)) {

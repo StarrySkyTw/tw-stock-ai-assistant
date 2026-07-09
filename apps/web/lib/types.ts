@@ -1,5 +1,15 @@
 export type Light = "green" | "yellow" | "red";
 export type MarketPhase = "pre_open" | "regular" | "post_close" | "closed";
+export type GateStatus = "pass" | "watch" | "fail" | "not_applicable" | "unknown";
+export type ResearchStance = "worth_research" | "wait_better_price" | "watch" | "avoid" | "reduce_risk";
+export type CandidateStatus = "qualified_research" | "wait_price" | "watch_only" | "reject";
+export type BreakoutStatus =
+  | "ready_setup"
+  | "wait_confirmation"
+  | "wait_pullback"
+  | "too_extended"
+  | "not_ready"
+  | "data_limited";
 
 export type MarketRefreshInfo = {
   now: string;
@@ -23,6 +33,37 @@ export type RiskLights = {
   table: Array<{ item: string; status: string }>;
 };
 
+export type MarketIndexQuote = {
+  symbol: string;
+  name: string;
+  value: number;
+  change: number;
+  change_percent: number;
+  volume?: number | null;
+  source: string;
+  updated_at: string;
+};
+
+export type MarketRiskResponse = {
+  status: string;
+  score: number;
+  lights: RiskLights;
+  indicators: Record<string, number | null>;
+  reasons: string[];
+  generated_at: string;
+  market_date: string;
+  refresh: MarketRefreshInfo;
+};
+
+export type MarketOverviewResponse = {
+  taiex_state: string;
+  otc_state: string;
+  market_status: string;
+  heavyweight_impact: Record<string, number>;
+  taiex_quote?: MarketIndexQuote | null;
+  risk: MarketRiskResponse;
+};
+
 export type DecisionScenario = {
   name: string;
   condition: string;
@@ -42,6 +83,64 @@ export type DecisionPlan = {
   next_review_triggers: string[];
   data_quality: string[];
   ai_snapshot_prompt: string;
+};
+
+export type FundamentalGate = {
+  status: GateStatus;
+  grade: string;
+  passed: boolean;
+  failed_reasons: string[];
+  metrics: Record<string, number | null>;
+};
+
+export type ValuationGate = {
+  status: GateStatus;
+  pe_ratio: number | null;
+  pe_band: string;
+  sector_band: string;
+  is_low_valuation: boolean;
+  warning?: string | null;
+};
+
+export type TimingGate = {
+  status: GateStatus;
+  trend: string;
+  support_zone: string;
+  no_chase_zone: string;
+  entry_conditions: string[];
+  invalidation_price: number | null;
+};
+
+export type PricePlan = {
+  research_price: number | null;
+  watch_price: number | null;
+  invalidation_price: number | null;
+  position_size_hint: string;
+};
+
+export type ResearchDecision = {
+  stance: ResearchStance;
+  horizon: string;
+  confidence: "高" | "中" | "低";
+  summary: string;
+  next_action: string;
+  do_not_chase_reason?: string | null;
+  blockers: string[];
+  review_triggers: string[];
+};
+
+export type BreakoutPotential = {
+  status: BreakoutStatus;
+  label: string;
+  score: number;
+  confidence: "高" | "中" | "低";
+  headline: string;
+  thesis: string;
+  leading_signals: string[];
+  missing_confirmations: string[];
+  trigger_conditions: string[];
+  invalidation: string;
+  no_chase_warning?: string | null;
 };
 
 export type MarginSummary = {
@@ -74,9 +173,19 @@ export type StrategyJudgement = {
   defensive_triggers: string[];
 };
 
+export type KlineAnalysis = {
+  headline: string;
+  trend: string;
+  support_levels: string[];
+  resistance_levels: string[];
+  strategy_notes: string[];
+  invalidation: string[];
+};
+
 export type AnalysisResponse = {
   symbol: string;
   name?: string | null;
+  industry?: string | null;
   analysis_date: string;
   generated_at: string;
   refresh: MarketRefreshInfo;
@@ -115,6 +224,7 @@ export type AnalysisResponse = {
     summary: string;
     headlines: string[];
     model?: string | null;
+    error?: string | null;
   };
   stop_loss: {
     fixed_5_percent: number | null;
@@ -135,7 +245,14 @@ export type AnalysisResponse = {
   };
   risk_lights: RiskLights;
   decision_plan: DecisionPlan;
+  research_decision: ResearchDecision;
+  fundamental_gate: FundamentalGate;
+  valuation_gate: ValuationGate;
+  timing_gate: TimingGate;
+  price_plan: PricePlan;
   strategy_judgement: StrategyJudgement;
+  breakout_potential: BreakoutPotential;
+  kline_analysis: KlineAnalysis;
   disclaimer: string;
 };
 
@@ -144,6 +261,33 @@ export type ChartResponse = {
   name?: string | null;
   range: string;
   figure: Record<string, unknown>;
+};
+
+export type IntradayPoint = {
+  time: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+};
+
+export type IntradayResponse = {
+  symbol: string;
+  name?: string | null;
+  source: string;
+  interval: string;
+  trade_date?: string | null;
+  previous_close?: number | null;
+  open?: number | null;
+  high?: number | null;
+  low?: number | null;
+  latest?: number | null;
+  change?: number | null;
+  change_percent?: number | null;
+  volume?: number | null;
+  updated_at: string;
+  points: IntradayPoint[];
 };
 
 export type AiPickFactor = {
@@ -169,19 +313,33 @@ export type AiStockPick = {
   symbol: string;
   name?: string | null;
   industry: string;
-  latest_close: number;
+  latest_close?: number | null;
   recommendation: string;
   selection_score: number;
   adjusted_score: number;
+  candidate_status: CandidateStatus;
+  data_quality_score: number;
+  score_cap_reason?: string | null;
   bias: "bullish" | "neutral" | "bearish";
   confidence: string;
   strategy_judgement: StrategyJudgement;
+  research_decision: ResearchDecision;
+  fundamental_gate: FundamentalGate;
+  valuation_gate: ValuationGate;
+  timing_gate: TimingGate;
+  price_plan: PricePlan;
+  breakout_potential: BreakoutPotential;
   thesis: string;
   bullish_factors: AiPickFactor[];
   risk_factors: AiPickFactor[];
   score_breakdown: Record<string, number>;
   data_quality: string[];
   source_notes: string[];
+  data_sources: Record<string, string>;
+  blockers: string[];
+  why_ranked: string[];
+  no_chase_reason?: string | null;
+  future_outlook?: PositionFutureOutlook | null;
 };
 
 export type AiStockPicksResponse = {
@@ -195,9 +353,54 @@ export type AiStockPicksResponse = {
   disclaimer: string;
 };
 
+export type MarketScanCandidate = {
+  rank: number;
+  symbol: string;
+  name?: string | null;
+  industry: string;
+  latest_close?: number | null;
+  candidate_status: CandidateStatus;
+  selection_score: number;
+  adjusted_score: number;
+  data_quality_score: number;
+  score_cap_reason?: string | null;
+  research_decision: ResearchDecision;
+  fundamental_gate: FundamentalGate;
+  valuation_gate: ValuationGate;
+  timing_gate: TimingGate;
+  price_plan: PricePlan;
+  breakout_potential: BreakoutPotential;
+  data_sources: Record<string, string>;
+  blockers: string[];
+  why_ranked: string[];
+  no_chase_reason?: string | null;
+  future_outlook?: PositionFutureOutlook | null;
+};
+
+export type MarketScanResponse = {
+  scan_id: number;
+  generated_at: string;
+  universe_count: number;
+  completed_count: number;
+  failed_count: number;
+  universe_source: string;
+  is_full_market: boolean;
+  data_quality_summary: Record<string, number>;
+  top_candidates: MarketScanCandidate[];
+  failed_symbols: string[];
+};
+
+export type MarketScanRequest = {
+  universe?: string[];
+  limit?: number;
+  max_symbols?: number;
+};
+
 export type WatchlistItem = {
   id: number;
   symbol: string;
+  name?: string | null;
+  lookup_status?: "verified" | "unknown_symbol";
   note?: string | null;
   target_price?: number | null;
   stop_price?: number | null;
@@ -215,4 +418,64 @@ export type PositionItem = {
   status: "open" | "closed" | string;
   created_at: string;
   updated_at: string;
+};
+
+export type PositionDecisionAction = "sell" | "reduce" | "hold" | "add" | "watch";
+
+export type PositionDecisionSignal = {
+  kind: string;
+  label: string;
+  detail: string;
+  tone: "positive" | "neutral" | "risk";
+  priority: number;
+};
+
+export type PositionFutureScenario = {
+  name: string;
+  probability: number;
+  condition: string;
+  action: string;
+  trigger: string;
+  invalidation: string;
+  tone: "positive" | "neutral" | "risk";
+};
+
+export type PositionSwingPlan = {
+  stance: string;
+  horizon: string;
+  entry_zone: string;
+  add_rule: string;
+  trim_rule: string;
+  stop_rule: string;
+  review_rule: string;
+  position_size_hint: string;
+};
+
+export type PositionFutureOutlook = {
+  label: string;
+  horizon: string;
+  expectation_gap: string;
+  leading_indicators: string[];
+  scenarios: PositionFutureScenario[];
+  swing_plan: PositionSwingPlan;
+};
+
+export type PositionDecisionItem = {
+  position: PositionItem;
+  latest_close?: number | null;
+  cost_basis: number;
+  market_value?: number | null;
+  unrealized_pnl?: number | null;
+  unrealized_pnl_percent?: number | null;
+  action: PositionDecisionAction;
+  action_label: string;
+  confidence: "高" | "中" | "低";
+  headline: string;
+  rationale: string;
+  priority_factors: PositionDecisionSignal[];
+  bullish_factors: PositionDecisionSignal[];
+  risk_factors: PositionDecisionSignal[];
+  future_outlook?: PositionFutureOutlook | null;
+  next_review_triggers: string[];
+  data_quality: string[];
 };
