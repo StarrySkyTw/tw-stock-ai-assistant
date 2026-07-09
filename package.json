@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "api:test": "cd apps/api && pytest",
-    "web:test": "cd apps/web && npm test",
-    "web:dev": "cd apps/web && npm run dev",
-    "compose:up": "docker compose up --build"
+    "api:test": "cd apps/api && python -m pytest",
+    "web:test": "pnpm -C apps/web test",
+    "web:dev": "pnpm -C apps/web dev",
+    "compose:up": "docker compose -p stockai up -d",
+    "compose:build": "docker compose -p stockai up -d --build"
   }
 }
-

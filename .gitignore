@@ -35,6 +35,12 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# Native launcher runtime
+.native/
+.runtime/
+runtime/
+.edge-native-app-profile/
+
 # OS / editor
 .DS_Store
 Thumbs.db

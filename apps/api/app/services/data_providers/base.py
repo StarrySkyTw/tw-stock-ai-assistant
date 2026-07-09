@@ -81,10 +81,12 @@ def normalize_price_frame(df: pd.DataFrame) -> pd.DataFrame:
     if missing:
         raise ValueError(f"Price dataframe missing columns: {missing}")
     out = renamed[required].copy()
-    out["date"] = pd.to_datetime(out["date"]).dt.date
+    out["date"] = pd.to_datetime(out["date"], errors="coerce").dt.date
     for column in ["open", "high", "low", "close", "volume"]:
         values = out[column]
         if isinstance(values, pd.DataFrame):
             values = values.iloc[:, 0]
         out[column] = pd.to_numeric(values, errors="coerce")
+    out = out.dropna(subset=["date", "open", "high", "low", "close"])
+    out["volume"] = out["volume"].fillna(0)
     return out.sort_values("date").reset_index(drop=True)

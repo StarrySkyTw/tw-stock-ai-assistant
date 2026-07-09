@@ -10,12 +10,13 @@
 - `apps/web`：Next.js + TypeScript + TailwindCSS 前端儀表板。
 - `infra`：Dockerfile。
 - `docs`：API、資料庫與 Linear backlog 文件。
+- `docs/product-roadmap.md`：外部產品參考、分析師式策略、Web 與 iOS 後續路線。
 
 ## 快速啟動
 
 1. 複製環境檔：`copy .env.example .env`
-2. 填入可選 token：`FINMIND_TOKEN`、`OPENAI_API_KEY`、Gmail/Telegram/LINE 設定。
-3. 啟動：`docker compose up --build`
+2. 本機密鑰請放在 `.env.local`，例如 `OPENAI_API_KEY`；`.env` 保留預設設定，`.env.local` 會覆蓋它且不會被 git 追蹤。
+3. 啟動：`docker compose -p stockai up -d`；只有程式碼或依賴更新時才需要加 `--build`。
 4. 前端：http://localhost:3000
 5. 後端：http://localhost:8000/docs
 

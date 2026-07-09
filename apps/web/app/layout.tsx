@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "台股 AI 投資決策助手",
-  description: "台股技術、籌碼、基本面、風險與 AI 新聞摘要儀表板"
+  title: "台股研究判斷小幫手",
+  description: "以研究結論、門檻檢查、觀察清單與決策紀錄協助判斷台股。"
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -13,4 +13,3 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     </html>
   );
 }
-

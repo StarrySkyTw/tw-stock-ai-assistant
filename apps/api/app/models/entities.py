@@ -173,6 +173,17 @@ class MarketRiskSnapshot(Base, TimestampMixin):
     payload: Mapped[dict[str, Any]] = mapped_column(JsonType)
 
 
+class MarketScanResult(Base, TimestampMixin):
+    __tablename__ = "market_scan_results"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    generated_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    universe_count: Mapped[int] = mapped_column(Integer)
+    completed_count: Mapped[int] = mapped_column(Integer)
+    failed_count: Mapped[int] = mapped_column(Integer)
+    payload: Mapped[dict[str, Any]] = mapped_column(JsonType)
+
+
 class Position(Base, TimestampMixin):
     __tablename__ = "positions"
 

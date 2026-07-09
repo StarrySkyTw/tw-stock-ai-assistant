@@ -7,6 +7,7 @@ from app.models.entities import (
     Instrument,
     MarginBalance,
     MarketRiskSnapshot,
+    MarketScanResult,
     MonthlyRevenue,
     NewsItem,
     NotificationChannel,
@@ -28,6 +29,7 @@ __all__ = [
     "Instrument",
     "MarginBalance",
     "MarketRiskSnapshot",
+    "MarketScanResult",
     "MonthlyRevenue",
     "NewsItem",
     "NotificationChannel",
@@ -39,4 +41,3 @@ __all__ = [
     "TechnicalSnapshot",
     "WatchlistItem",
 ]
-

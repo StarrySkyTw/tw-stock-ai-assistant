@@ -39,7 +39,7 @@ def _write_pdf(path: Path, analysis: dict) -> None:
     lines = [
         f"日期：{analysis['analysis_date']}",
         f"總分：{analysis['adjusted_score']} / 100（原始分數 {analysis['raw_score']}）",
-        f"建議：{analysis['recommendation']}",
+        f"研究狀態：{analysis['recommendation']}",
         f"停利價：{analysis['trailing_take_profit']['current_take_profit_price']}",
         f"ATR 停損：{analysis['stop_loss']['atr_stop']}",
         "理由：",

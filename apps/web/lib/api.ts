@@ -1,11 +1,23 @@
-import type { AiStockPicksResponse, AnalysisResponse, ChartResponse, PositionItem, WatchlistItem } from "./types";
+import type {
+  AiStockPicksResponse,
+  AnalysisResponse,
+  ChartResponse,
+  IntradayResponse,
+  MarketScanRequest,
+  MarketScanResponse,
+  MarketOverviewResponse,
+  PositionDecisionItem,
+  PositionItem,
+  WatchlistItem
+} from "./types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "";
 
 type AnalysisOptions = {
   entryPrice?: number;
   highestPrice?: number;
   atrMultiplier?: number;
+  wait?: boolean;
 };
 
 type AiPicksOptions = {
@@ -39,6 +51,7 @@ export async function fetchAnalysis(symbol: string, options: AnalysisOptions = {
   if (options.entryPrice !== undefined) params.set("entry_price", String(options.entryPrice));
   if (options.highestPrice !== undefined) params.set("highest_price", String(options.highestPrice));
   if (options.atrMultiplier !== undefined) params.set("atr_multiplier", String(options.atrMultiplier));
+  if (options.wait !== undefined) params.set("wait", String(options.wait));
   const query = params.toString();
   return getJson<AnalysisResponse>(
     `/api/v1/stocks/${encodeURIComponent(symbol)}/analysis${query ? `?${query}` : ""}`
@@ -49,6 +62,10 @@ export async function fetchChart(symbol: string, range = "1y"): Promise<ChartRes
   return getJson<ChartResponse>(`/api/v1/stocks/${encodeURIComponent(symbol)}/chart?range=${range}`);
 }
 
+export async function fetchIntraday(symbol: string): Promise<IntradayResponse> {
+  return getJson<IntradayResponse>(`/api/v1/stocks/${encodeURIComponent(symbol)}/intraday`);
+}
+
 export async function fetchAiPicks(options: AiPicksOptions = {}): Promise<AiStockPicksResponse> {
   const params = new URLSearchParams();
   if (options.universe?.length) params.set("universe", options.universe.join(","));
@@ -56,6 +73,21 @@ export async function fetchAiPicks(options: AiPicksOptions = {}): Promise<AiStoc
   if (options.minScore !== undefined) params.set("min_score", String(options.minScore));
   const query = params.toString();
   return getJson<AiStockPicksResponse>(`/api/v1/market/ai-picks${query ? `?${query}` : ""}`);
+}
+
+export async function fetchLatestMarketScan(): Promise<MarketScanResponse> {
+  return getJson<MarketScanResponse>("/api/v1/market/scans/latest");
+}
+
+export async function createMarketScan(payload: MarketScanRequest = {}): Promise<MarketScanResponse> {
+  return sendJson<MarketScanResponse>("/api/v1/market/scans", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function fetchMarketOverview(): Promise<MarketOverviewResponse> {
+  return getJson<MarketOverviewResponse>("/api/v1/market/overview");
 }
 
 export async function generatePdf(symbol: string): Promise<{ file_path: string }> {
@@ -94,11 +126,16 @@ export async function fetchPositions(status = "open"): Promise<PositionItem[]> {
   return getJson<PositionItem[]>(`/api/v1/positions?status=${encodeURIComponent(status)}`);
 }
 
+export async function fetchPositionDecisions(status = "open"): Promise<PositionDecisionItem[]> {
+  return getJson<PositionDecisionItem[]>(`/api/v1/positions/decisions?status=${encodeURIComponent(status)}`);
+}
+
 export async function savePosition(payload: {
   symbol: string;
   entry_price: number;
   quantity?: number;
   highest_price?: number | null;
+  entry_date?: string | null;
 }): Promise<PositionItem> {
   return sendJson<PositionItem>("/api/v1/positions", {
     method: "POST",

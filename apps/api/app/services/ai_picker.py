@@ -3,8 +3,12 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from app.core.config import get_settings
 from app.services.analysis import AnalysisService
 from app.services.calendar import taipei_now
+from app.services.future_outlook import build_candidate_future_outlook
+from app.services.industry import OTHER_INDUSTRY, SECTOR_THEMES, TECH_SECTORS, resolve_industry
+from app.services.market_context import build_market_context
 from app.services.market_risk import MarketRiskEngine
 
 DEFAULT_AI_UNIVERSE = [
@@ -38,81 +42,6 @@ DEFAULT_AI_UNIVERSE = [
     "00878",
 ]
 
-SECTOR_MAP = {
-    "0050": "台股大型權值 ETF",
-    "0056": "台股高股息 ETF",
-    "00878": "台股 ESG 高股息 ETF",
-    "2330": "半導體晶圓代工",
-    "2317": "電子代工與 AI 伺服器",
-    "2454": "IC 設計",
-    "2308": "電源管理與工業自動化",
-    "2382": "AI 伺服器與電子代工",
-    "2412": "電信服務",
-    "3711": "半導體封測控股",
-    "2603": "航運",
-    "2609": "航運",
-    "2615": "航運",
-    "2881": "金融控股",
-    "2882": "金融控股",
-    "2891": "金融控股",
-    "3008": "光學鏡頭",
-    "3034": "高速傳輸與網通晶片",
-    "3443": "ASIC 與 AI 晶片",
-    "3661": "半導體 IP",
-    "2357": "品牌電腦與伺服器",
-    "2379": "IC 設計與高速傳輸",
-    "3231": "AI 伺服器與雲端設備",
-    "5871": "租賃金融",
-    "1216": "食品與內需",
-    "1303": "塑化",
-    "2002": "鋼鐵",
-    "1101": "水泥",
-}
-
-SECTOR_THEMES = {
-    "台股大型權值 ETF": "跟隨台股大型權值股與大盤資金風向。",
-    "台股高股息 ETF": "重視配息穩定度、成分股品質與利率環境。",
-    "台股 ESG 高股息 ETF": "重視配息穩定度、成分股品質與大型電子金融權重。",
-    "半導體晶圓代工": "受 AI、高效能運算、先進製程與費半情緒牽動。",
-    "電子代工與 AI 伺服器": "受 AI 伺服器、雲端資本支出與美元匯率影響。",
-    "IC 設計": "受手機、AI 邊緣運算與消費電子週期影響。",
-    "AI 伺服器與電子代工": "受 AI 伺服器、雲端資本支出與美元匯率影響。",
-    "電源管理與工業自動化": "受 AI 電力、電動車、工控與能源效率需求牽動。",
-    "半導體封測控股": "受先進封裝、測試需求與半導體庫存循環影響。",
-    "電信服務": "防禦性較高，重點在現金流、股利與用戶成長。",
-    "航運": "景氣循環強，重點在運價、供需與油價成本。",
-    "金融控股": "受殖利率、信用循環、股債市表現與淨值評價影響。",
-    "光學鏡頭": "受手機規格升級、車用鏡頭與客戶拉貨節奏影響。",
-    "高速傳輸與網通晶片": "受 AI 伺服器、交換器、光通訊與高速傳輸規格升級牽動。",
-    "ASIC 與 AI 晶片": "受客製化 AI 晶片、先進製程與雲端需求影響。",
-    "半導體 IP": "受先進製程設計案、授權金與半導體投片循環影響。",
-    "品牌電腦與伺服器": "受 PC 週期、AI PC、伺服器與通路庫存影響。",
-    "IC 設計與高速傳輸": "受 PC、伺服器、USB/PCIe 規格升級與庫存循環影響。",
-    "AI 伺服器與雲端設備": "受 AI 伺服器建置、雲端資本支出與供應鏈拉貨節奏影響。",
-    "租賃金融": "受利率、企業投資循環與信用風險影響。",
-    "食品與內需": "受內需消費、原物料成本與通路價格影響。",
-    "塑化": "受油價、利差、需求復甦與中國供給影響。",
-    "鋼鐵": "受景氣循環、原料成本、基建與需求復甦影響。",
-    "水泥": "受基建需求、能源成本與區域價格影響。",
-}
-
-TECH_SECTORS = {
-    "半導體晶圓代工",
-    "電子代工與 AI 伺服器",
-    "IC 設計",
-    "AI 伺服器與電子代工",
-    "電源管理與工業自動化",
-    "半導體封測控股",
-    "高速傳輸與網通晶片",
-    "ASIC 與 AI 晶片",
-    "半導體 IP",
-    "品牌電腦與伺服器",
-    "IC 設計與高速傳輸",
-    "AI 伺服器與雲端設備",
-    "光學鏡頭",
-}
-
-
 class AiStockPickerService:
     def __init__(self) -> None:
         self.analysis_service = AnalysisService()
@@ -125,8 +54,9 @@ class AiStockPickerService:
         min_score: float = 60.0,
     ) -> dict[str, Any]:
         symbols = normalize_universe(universe)
+        settings = get_settings()
         market = await self.risk_engine.evaluate()
-        analyses, failed = await self._analyze_universe(symbols)
+        analyses, failed = await self._analyze_universe(symbols, market, settings.analysis_background_timeout_seconds)
         all_candidates = [_build_candidate(item, market) for item in analyses]
         all_candidates.sort(key=lambda item: item["selection_score"], reverse=True)
 
@@ -160,22 +90,31 @@ class AiStockPickerService:
             },
             "top_picks": selected,
             "selection_logic": [
-                "先以單檔綜合分數為基底，納入技術、法人、基本面與新聞情緒。",
-                "再用當日市場風險燈號、Nasdaq/費半方向與產業屬性做加減分。",
-                "同步檢查是否守穩 MA20/MA60、法人籌碼是否轉買、融資是否下降，避免新聞熱了才追價。",
-                "最後只保留分數達標或排序較高的研究候選股，並列出利多因素、進場時機與風險。",
+                "先看基本面門檻：EPS、ROE、營收與利潤品質沒有過關，不因短線 K 線漂亮而優先。",
+                "再看估值門檻：本益比是評價便宜或昂貴，不是股票價格高低。",
+                "K 線只負責判斷時機：站穩中長期均線才加分，過熱急漲會觸發禁追。",
+                "候選清單只供 3 個月到 2 年研究，不構成買進或下單指令。",
             ],
             "watch_notes": notes,
             "disclaimer": "AI 盤勢選股僅供研究與篩選，不構成投資建議、保證獲利或下單指令。",
         }
 
-    async def _analyze_universe(self, symbols: list[str]) -> tuple[list[dict[str, Any]], list[str]]:
+    async def _analyze_universe(
+        self,
+        symbols: list[str],
+        market_risk: dict[str, Any],
+        data_timeout_seconds: float | None = None,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
         semaphore = asyncio.Semaphore(4)
 
         async def analyze_one(symbol: str) -> tuple[str, dict[str, Any] | None]:
             try:
                 async with semaphore:
-                    return symbol, await self.analysis_service.analyze(symbol)
+                    return symbol, await self.analysis_service.analyze(
+                        symbol,
+                        market_risk=market_risk,
+                        data_timeout_seconds=data_timeout_seconds,
+                    )
             except Exception:
                 return symbol, None
 
@@ -202,18 +141,34 @@ def normalize_universe(universe: list[str] | None = None) -> list[str]:
 
 def _build_candidate(analysis: dict[str, Any], market: dict[str, Any]) -> dict[str, Any]:
     symbol = analysis["symbol"]
-    industry = SECTOR_MAP.get(symbol, "未分類產業")
+    industry = resolve_industry(symbol, analysis.get("name"), analysis.get("industry"))
     positive_factors: list[dict[str, str]] = []
     risk_factors: list[dict[str, str]] = []
 
-    score = float(analysis["adjusted_score"])
+    score = 45.0 + float(analysis["adjusted_score"]) * 0.15
+    trusted_fundamental = _has_trusted_fundamental(analysis)
+    score += _collect_gate_factors(analysis, positive_factors, risk_factors, trusted_fundamental)
     score += _collect_market_factors(market, industry, positive_factors, risk_factors)
-    score += _collect_technical_factors(analysis["technical"], positive_factors, risk_factors)
+    score += _collect_technical_factors(analysis["technical"], positive_factors, risk_factors) * 0.5
     score += _collect_institutional_factors(analysis["institutional"], positive_factors, risk_factors)
-    score += _collect_strategy_factors(analysis["strategy_judgement"], positive_factors, risk_factors)
-    score += _collect_fundamental_factors(analysis["fundamental"], industry, positive_factors, risk_factors)
+    score += _collect_strategy_factors(analysis["strategy_judgement"], positive_factors, risk_factors) * 0.5
+    if trusted_fundamental:
+        score += _collect_fundamental_factors(analysis["fundamental"], industry, positive_factors, risk_factors)
+    else:
+        score -= 10
+        risk_factors.append(
+            _factor("data_quality", "資料可信度", "基本面未接入可驗證真實來源，不採用 EPS、PE、ROE 或營收做排序理由。", "risk")
+        )
     score += _collect_sentiment_factors(analysis["sentiment"], positive_factors, risk_factors)
+    breakout = analysis["breakout_potential"]
+    score += _collect_breakout_factor(breakout, positive_factors, risk_factors)
+    candidate_status, blockers = classify_candidate_status(analysis, market)
+    data_quality_score = _candidate_data_quality_score(analysis)
+    score, score_cap_reason = _apply_score_quality_cap(score, candidate_status, analysis)
     score = round(max(0, min(100, score)), 2)
+    why_ranked = _why_ranked(positive_factors, risk_factors, analysis)
+    market_context = build_market_context(analysis, symbol)
+    priority_factors = _candidate_future_priority_factors(analysis, market_context)
 
     if not positive_factors:
         positive_factors.append(
@@ -228,19 +183,357 @@ def _build_candidate(analysis: dict[str, Any], market: dict[str, Any]) -> dict[s
         "name": analysis.get("name"),
         "industry": industry,
         "latest_close": analysis["technical"]["latest_close"],
-        "recommendation": analysis["recommendation"],
+        "recommendation": _candidate_action_label(candidate_status),
         "selection_score": score,
         "adjusted_score": analysis["adjusted_score"],
+        "candidate_status": candidate_status,
+        "data_quality_score": data_quality_score,
+        "score_cap_reason": score_cap_reason,
         "bias": analysis["decision_plan"]["bias"],
-        "confidence": analysis["decision_plan"]["confidence"],
+        "confidence": analysis["research_decision"]["confidence"],
         "strategy_judgement": analysis["strategy_judgement"],
+        "research_decision": analysis["research_decision"],
+        "fundamental_gate": analysis["fundamental_gate"],
+        "valuation_gate": analysis["valuation_gate"],
+        "timing_gate": analysis["timing_gate"],
+        "price_plan": analysis["price_plan"],
+        "breakout_potential": breakout,
         "thesis": _thesis(symbol, analysis.get("name"), industry, score, positive_factors, market),
         "bullish_factors": positive_factors[:8],
         "risk_factors": risk_factors[:6],
         "score_breakdown": analysis["decision_plan"]["score_breakdown"],
         "data_quality": analysis["decision_plan"]["data_quality"],
         "source_notes": analysis["decision_plan"]["next_review_triggers"][:4],
+        "data_sources": analysis["data_sources"],
+        "blockers": blockers,
+        "why_ranked": why_ranked,
+        "no_chase_reason": _candidate_no_chase_reason(analysis),
+        "future_outlook": build_candidate_future_outlook(
+            analysis=analysis,
+            market_context=market_context,
+            priority_factors=priority_factors,
+            latest_close=analysis.get("technical", {}).get("latest_close"),
+            candidate_status=candidate_status,
+        ),
     }
+
+
+def build_candidate_from_analysis(analysis: dict[str, Any], market: dict[str, Any]) -> dict[str, Any]:
+    return _build_candidate(analysis, market)
+
+
+def classify_candidate_status(analysis: dict[str, Any], market: dict[str, Any]) -> tuple[str, list[str]]:
+    data_sources = analysis.get("data_sources", {})
+    decision = analysis["research_decision"]
+    fundamental_gate = analysis["fundamental_gate"]
+    valuation_gate = analysis["valuation_gate"]
+    timing_gate = analysis["timing_gate"]
+    composite_light = market.get("lights", {}).get("composite", "yellow")
+
+    if not _is_trusted_source(str(data_sources.get("fundamental", "")), "fundamental"):
+        blockers = [
+            "基本面不是可驗證真實來源，僅能列為觀察，不能當成合格標的。",
+            "估值與獲利數字不是可驗證真實來源，本輪不採用 PE、PB、ROE 或營收作判斷。",
+        ]
+        timing_reason = _technical_no_chase_reason(decision.get("do_not_chase_reason"))
+        if timing_reason:
+            blockers.append(timing_reason)
+        return "watch_only", _dedupe(blockers)
+    if not _is_trusted_source(str(data_sources.get("price", "")), "price"):
+        blockers = [
+            "價格資料不是可驗證日 K，不能建立支撐、壓力、失效價或波段候選。",
+            "先補上可信價格來源，再重新掃描未來劇本。",
+        ]
+        return "watch_only", _dedupe(blockers)
+    blockers = list(decision.get("blockers", []))
+    if fundamental_gate["status"] == "fail":
+        blockers.append("基本面門檻未通過。")
+        return "reject", _dedupe(blockers)
+    if composite_light == "red":
+        blockers.append("大盤綜合燈號為紅燈。")
+        return "reject", _dedupe(blockers)
+    if timing_gate["status"] == "fail":
+        blockers.append("K 線中長期趨勢未站穩。")
+        return "reject", _dedupe(blockers)
+    if valuation_gate["status"] in {"watch", "fail", "unknown"}:
+        blockers.append(valuation_gate.get("warning") or "估值尚未進入合理或便宜區間。")
+        return "wait_price", _dedupe(blockers)
+    if decision.get("do_not_chase_reason") or timing_gate["status"] != "pass":
+        blockers.append(decision.get("do_not_chase_reason") or "K 線時機尚未乾淨。")
+        return "watch_only", _dedupe(blockers)
+    if fundamental_gate["passed"] and valuation_gate["status"] in {"pass", "not_applicable"}:
+        return "qualified_research", _dedupe(blockers)
+    blockers.append("條件尚未完整，先維持觀察。")
+    return "watch_only", _dedupe(blockers)
+
+
+def _candidate_data_quality_score(analysis: dict[str, Any]) -> float:
+    sources = analysis.get("data_sources", {})
+    weights = {
+        "fundamental": 40,
+        "price": 20,
+        "institutional": 12,
+        "margin": 10,
+        "news": 10,
+        "shareholding": 8,
+    }
+    score = 0
+    for key, weight in weights.items():
+        if _is_trusted_source(str(sources.get(key, "")), key):
+            score += weight
+    return float(score)
+
+
+def _has_trusted_fundamental(analysis: dict[str, Any]) -> bool:
+    return _is_trusted_source(str(analysis.get("data_sources", {}).get("fundamental", "")), "fundamental")
+
+
+def _candidate_no_chase_reason(analysis: dict[str, Any]) -> str | None:
+    reason = analysis["research_decision"].get("do_not_chase_reason")
+    if _has_trusted_fundamental(analysis):
+        return reason
+    return _technical_no_chase_reason(reason)
+
+
+def _candidate_future_priority_factors(
+    analysis: dict[str, Any],
+    market_context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    signals = [dict(signal) for signal in market_context.get("signals", [])]
+    metrics = analysis.get("fundamental_gate", {}).get("metrics", {})
+    revenue_yoy = _float_or_none(metrics.get("revenue_yoy"))
+    revenue_mom = _float_or_none(metrics.get("revenue_mom"))
+    valuation = analysis.get("valuation_gate", {})
+    timing = analysis.get("timing_gate", {})
+
+    if not _has_trusted_fundamental(analysis):
+        signals.append(
+            _candidate_signal(
+                "revenue",
+                "預期差",
+                "基本面來源不足，不能用營收或估值推論未來利多。",
+                "neutral",
+                1,
+            )
+        )
+    elif revenue_yoy is not None and revenue_yoy < 0:
+        signals.append(
+            _candidate_signal("revenue", "預期差", "營收年增轉負，存在負向預期差風險。", "risk", 1)
+        )
+    elif revenue_yoy is not None and revenue_yoy >= 20 and (revenue_mom is None or revenue_mom >= 0):
+        signals.append(
+            _candidate_signal(
+                "revenue",
+                "預期差",
+                "營收動能有正向預期差雛形，但仍要等事件或價格確認。",
+                "positive",
+                1,
+            )
+        )
+    else:
+        signals.append(
+            _candidate_signal("revenue", "預期差", "預期差尚未明顯打開，不能只因反彈就假設利多。", "neutral", 2)
+        )
+
+    valuation_status = str(valuation.get("status") or "unknown")
+    if valuation_status in {"watch", "fail", "unknown"}:
+        signals.append(
+            _candidate_signal(
+                "valuation",
+                "估值空間",
+                str(valuation.get("warning") or "估值還沒進入安全邊際，候選先等價位。"),
+                "risk",
+                1,
+            )
+        )
+    else:
+        signals.append(
+            _candidate_signal("valuation", "估值空間", str(valuation.get("pe_band") or "估值未構成主要阻擋。"), "positive", 2)
+        )
+
+    timing_status = str(timing.get("status") or "unknown")
+    if timing_status == "pass" and not analysis.get("research_decision", {}).get("do_not_chase_reason"):
+        signals.append(
+            _candidate_signal(
+                "timing",
+                "波段時機",
+                str(timing.get("support_zone") or "K 線時機通過，等支撐回測或突破後確認。"),
+                "positive",
+                2,
+            )
+        )
+    else:
+        signals.append(
+            _candidate_signal(
+                "timing",
+                "波段時機",
+                str(analysis.get("research_decision", {}).get("do_not_chase_reason") or timing.get("trend") or "K 線時機未完整。"),
+                "risk",
+                1,
+            )
+        )
+
+    return signals
+
+
+def _candidate_signal(kind: str, label: str, detail: str, tone: str, priority: int) -> dict[str, Any]:
+    return {"kind": kind, "label": label, "detail": detail, "tone": tone, "priority": priority}
+
+
+def _technical_no_chase_reason(reason: str | None) -> str | None:
+    if not reason:
+        return None
+    if any(keyword in reason for keyword in ("RSI", "量比", "MA20", "爆量", "K 線", "追高")):
+        return reason
+    return None
+
+
+def _apply_score_quality_cap(
+    score: float,
+    candidate_status: str,
+    analysis: dict[str, Any],
+) -> tuple[float, str | None]:
+    sources = analysis.get("data_sources", {})
+    if not _is_trusted_source(str(sources.get("fundamental", "")), "fundamental"):
+        return min(score, 49.0), "基本面不是真實可驗證資料，排序分數上限為 49。"
+    if not _is_trusted_source(str(sources.get("price", "")), "price"):
+        return min(score, 49.0), "價格資料不是可驗證日 K，波段候選分數上限為 49。"
+    if candidate_status == "watch_only":
+        return min(score, 69.0), "候選仍屬只觀察，排序分數上限為 69。"
+    if candidate_status == "reject":
+        return min(score, 39.0), "候選已被排除，排序分數上限為 39。"
+    return score, None
+
+
+def _candidate_action_label(candidate_status: str) -> str:
+    labels = {
+        "qualified_research": "合格研究",
+        "wait_price": "等便宜價",
+        "watch_only": "只觀察",
+        "reject": "排除",
+    }
+    return labels.get(candidate_status, "只觀察")
+
+
+def _is_trusted_source(source: str, key: str) -> bool:
+    normalized = source.lower()
+    if "sample" in normalized or not normalized or normalized == "unavailable":
+        return False
+    if key in {"fundamental", "institutional", "margin", "shareholding"}:
+        trusted_by_key = {
+            "fundamental": ("finmind", "twse-openapi", "tpex-openapi"),
+            "institutional": ("finmind", "twse-t86", "tpex-insti"),
+            "margin": ("finmind", "twse-margin", "tpex-margin"),
+            "shareholding": ("finmind", "tdcc"),
+        }
+        return any(provider in normalized for provider in trusted_by_key[key])
+    if key == "price":
+        return any(provider in normalized for provider in ("finmind", "twse", "yahoo"))
+    if key == "news":
+        return any(provider in normalized for provider in ("finmind", "twse-material", "tpex-material"))
+    return False
+
+
+def _why_ranked(
+    positive: list[dict[str, str]],
+    risks: list[dict[str, str]],
+    analysis: dict[str, Any],
+) -> list[str]:
+    reasons = [item["detail"] for item in positive if item.get("tone") == "positive"][:3]
+    if (
+        _has_trusted_fundamental(analysis)
+        and analysis["valuation_gate"]["status"] in {"watch", "fail"}
+        and analysis["valuation_gate"].get("warning")
+    ):
+        reasons.append(str(analysis["valuation_gate"]["warning"]))
+    do_not_chase_reason = analysis["research_decision"].get("do_not_chase_reason")
+    if do_not_chase_reason:
+        if _has_trusted_fundamental(analysis):
+            reasons.append(str(do_not_chase_reason))
+        else:
+            timing_reason = _technical_no_chase_reason(str(do_not_chase_reason))
+            if timing_reason:
+                reasons.append(timing_reason)
+    if not reasons:
+        reasons = [item["detail"] for item in [*positive, *risks]][:3]
+    return _dedupe(reasons)[:4]
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = value.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        output.append(normalized)
+    return output
+
+
+def _collect_gate_factors(
+    analysis: dict[str, Any],
+    positive: list[dict[str, str]],
+    risks: list[dict[str, str]],
+    trusted_fundamental: bool,
+) -> float:
+    bonus = 0.0
+    fundamental_gate = analysis["fundamental_gate"]
+    valuation_gate = analysis["valuation_gate"]
+    timing_gate = analysis["timing_gate"]
+    decision = analysis["research_decision"]
+
+    if trusted_fundamental:
+        if fundamental_gate["passed"]:
+            bonus += 16
+            positive.append(
+                _factor("fundamental", "基本面門檻", f"基本面 {fundamental_gate['grade']} 級，先通過中長期研究門檻。")
+            )
+        elif fundamental_gate["status"] == "watch":
+            bonus += 4
+            risks.append(_factor("fundamental", "基本面門檻", "基本面只達觀察等級，不能因 K 線轉強就追。", "neutral"))
+        else:
+            bonus -= 24
+            risks.append(
+                _factor(
+                    "fundamental",
+                    "基本面門檻",
+                    fundamental_gate["failed_reasons"][0] if fundamental_gate["failed_reasons"] else "基本面未通過。",
+                    "risk",
+                )
+            )
+
+        if valuation_gate["status"] == "pass":
+            bonus += 14
+            positive.append(_factor("valuation", "估值", f"本益比屬於{valuation_gate['pe_band']}，估值未明顯過熱。"))
+        elif valuation_gate["status"] == "not_applicable":
+            positive.append(_factor("valuation", "估值", "ETF 不用單一 PE 判斷，需改看成分股與大盤位置。", "neutral"))
+        elif valuation_gate["status"] == "watch":
+            bonus -= 2
+            risks.append(_factor("valuation", "估值", valuation_gate["warning"] or "估值偏貴，等便宜價。", "neutral"))
+        else:
+            bonus -= 16
+            risks.append(_factor("valuation", "估值", valuation_gate["warning"] or "估值未通過。", "risk"))
+
+    if timing_gate["status"] == "pass":
+        bonus += 8
+        positive.append(_factor("timing", "K線時機", timing_gate["trend"]))
+    elif timing_gate["status"] == "watch":
+        risks.append(_factor("timing", "K線時機", timing_gate["no_chase_zone"], "neutral"))
+    else:
+        bonus -= 10
+        risks.append(_factor("timing", "K線時機", timing_gate["trend"], "risk"))
+
+    do_not_chase_reason = decision.get("do_not_chase_reason")
+    if do_not_chase_reason and trusted_fundamental:
+        bonus -= 5
+        risks.append(_factor("discipline", "禁追", do_not_chase_reason, "risk"))
+    elif do_not_chase_reason:
+        timing_reason = _technical_no_chase_reason(str(do_not_chase_reason))
+        if timing_reason:
+            bonus -= 5
+            risks.append(_factor("discipline", "禁追", timing_reason, "risk"))
+    return bonus
 
 
 def _collect_market_factors(
@@ -419,8 +712,8 @@ def _collect_fundamental_factors(
         elif pe_ratio > 40:
             bonus -= 2
             risks.append(_factor("fundamental", "評價", f"本益比 {pe_ratio:.1f} 偏高，需留意評價修正。", "risk"))
-    if industry == "未分類產業":
-        risks.append(_factor("industry", "產業", "尚未建立產業對照，產業面需人工補充確認。", "neutral"))
+    if industry == OTHER_INDUSTRY:
+        risks.append(_factor("industry", "產業", "產業分類暫列其他產業，產業面仍需人工確認。", "neutral"))
     return bonus
 
 
@@ -440,6 +733,30 @@ def _collect_sentiment_factors(
     return 0.0
 
 
+def _collect_breakout_factor(
+    breakout: dict[str, Any],
+    positive: list[dict[str, str]],
+    risks: list[dict[str, str]],
+) -> float:
+    status = breakout.get("status")
+    score = _float_or_none(breakout.get("score")) or 0.0
+    headline = str(breakout.get("headline") or "等待爆發潛力判斷。")
+    if status == "ready_setup":
+        positive.append(_factor("breakout", "爆發潛力", headline))
+        return min(7.0, max(3.0, (score - 65) * 0.18))
+    if status == "wait_confirmation":
+        positive.append(_factor("breakout", "爆發潛力", headline, "neutral"))
+        return 2.0
+    if status in {"wait_pullback", "too_extended"}:
+        risks.append(_factor("breakout", "爆發潛力", breakout.get("no_chase_warning") or headline, "neutral"))
+        return -2.0
+    if status == "not_ready":
+        risks.append(_factor("breakout", "爆發潛力", headline, "risk"))
+        return -5.0
+    risks.append(_factor("breakout", "爆發潛力", "資料不足，不判斷爆發潛力。", "neutral"))
+    return -4.0
+
+
 def _thesis(
     symbol: str,
     name: str | None,
@@ -456,6 +773,8 @@ def _thesis(
     market_status = market["status"]
     if market["lights"]["composite"] == "red":
         return f"{display} 分數 {score:.0f}，但今日盤勢為{market_status}且風險偏高，適合先列觀察並等待確認。"
+    if industry == OTHER_INDUSTRY:
+        return f"{display} 產業分類暫列其他產業，今日盤勢為{market_status}；{joined}，可先列觀察並確認公司業務。"
     return f"{display} 屬於{industry}，今日盤勢為{market_status}；{joined}，可列入優先研究候選。"
 
 

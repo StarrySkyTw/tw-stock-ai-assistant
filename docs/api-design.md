@@ -19,11 +19,23 @@ Base URL: `/api/v1`
 - `trailing_take_profit`：最高價 - N * ATR
 - `risk_lights`：大盤、法人、技術、風險、綜合燈號
 
+Additional analysis contract:
+
+- `sentiment.model` is non-null only when OpenAI successfully generated the sentiment result.
+- `sentiment.error` may be `missing_api_key`, `insufficient_quota`, `invalid_api_key`, `model_not_found`, or `openai_request_failed`.
+- `strategy_judgement` returns the analyst-style stance, timing score, entry triggers, and defensive triggers.
+- `kline_analysis` returns the K-line headline, support levels, resistance/overheat levels, strategy notes, and invalidation points.
+- `research_decision` is the primary user-facing decision contract for the 3-month to 2-year conservative research flow.
+- `fundamental_gate` checks EPS, ROE, revenue trend, gross margin, and operating margin before K-line timing can promote a stock.
+- `valuation_gate` treats PE ratio as valuation, not stock price. ETFs return `not_applicable` because a single-company PE gate does not fit them.
+- `timing_gate` uses MA60/MA120/MA240, support zone, overheating, and no-chase conditions. If price is too far above MA20, RSI is overheated, or volume is chase-like, the UI should warn the user to wait for pullback.
+- `price_plan` returns research price, watch price, invalidation price, and a conservative position-size hint for research only.
+
 ## Chart
 
 `GET /stocks/{symbol}/chart?range=1y|3y|5y`
 
-回傳 Plotly figure JSON，前端直接渲染。
+回傳輕量 `figure.data` JSON，保留 `candlestick` 與 `成交量` traces，前端用自製 SVG/K 線元件渲染。
 
 ## Market
 
